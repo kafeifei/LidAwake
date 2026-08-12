@@ -6,6 +6,9 @@ Portions of the battery icon geometry and state treatment are adapted from
 [Stats](https://github.com/exelban/stats), specifically
 [`Kit/Widgets/Battery.swift`](https://github.com/exelban/stats/blob/a0955d2ebd58e51558dee34619dce8982ad72df6/Kit/Widgets/Battery.swift).
 
+The Apple SMC access pattern used to read the `PSTR`, `PDTR`, and `PPBR` power
+sensors is adapted from Stats' MIT-licensed SMC implementation.
+
 MIT License
 
 Copyright (c) 2019 Serhiy Mytrovtsiy

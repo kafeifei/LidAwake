@@ -230,7 +230,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         refreshStatus()
         let refreshTimer = Timer(
-            timeInterval: 2,
+            timeInterval: 1,
             target: self,
             selector: #selector(statusTimerFired),
             userInfo: nil,

@@ -22,6 +22,8 @@ struct BatterySnapshot {
 }
 
 enum BatteryReader {
+    private static let systemPowerSensor = SystemPowerSensor()
+
     private struct PowerTelemetry {
         let systemLoadWatts: Double?
         let externalInputWatts: Double?
@@ -49,7 +51,10 @@ enum BatteryReader {
             let timeToEmpty = normalizedTime(description["Time to Empty"] as? NSNumber)
             let timeToFull = normalizedTime(description["Time to Full Charge"] as? NSNumber)
             let isOnACPower = sourceState == (kIOPSACPowerValue as String)
-            let telemetry = readPowerTelemetry(isCharging: isCharging, isOnACPower: isOnACPower)
+            let telemetry = readPowerTelemetry(
+                isCharging: isCharging,
+                isOnACPower: isOnACPower
+            )
 
             return BatterySnapshot(
                 percentage: Int((current / maximum * 100).rounded()),
@@ -81,13 +86,28 @@ enum BatteryReader {
         return watts.intValue
     }
 
-    private static func readPowerTelemetry(isCharging: Bool, isOnACPower: Bool) -> PowerTelemetry {
+    private static func readPowerTelemetry(
+        isCharging: Bool,
+        isOnACPower: Bool
+    ) -> PowerTelemetry {
+        let systemLoadWatts = systemPowerSensor?.readSystemWatts()
+        let externalInputWatts = systemPowerSensor?.readExternalInputWatts()
+        let batteryDischargeWatts = systemPowerSensor?.readBatteryDischargeWatts()
+
         guard let matching = IOServiceMatching("AppleSmartBattery") else {
-            return PowerTelemetry(systemLoadWatts: nil, externalInputWatts: nil, batteryWatts: nil)
+            return PowerTelemetry(
+                systemLoadWatts: systemLoadWatts,
+                externalInputWatts: externalInputWatts,
+                batteryWatts: nil
+            )
         }
         let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
         guard service != IO_OBJECT_NULL else {
-            return PowerTelemetry(systemLoadWatts: nil, externalInputWatts: nil, batteryWatts: nil)
+            return PowerTelemetry(
+                systemLoadWatts: systemLoadWatts,
+                externalInputWatts: externalInputWatts,
+                batteryWatts: nil
+            )
         }
         defer { IOObjectRelease(service) }
 
@@ -99,48 +119,70 @@ enum BatteryReader {
             0
         ) == KERN_SUCCESS,
         let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else {
-            return PowerTelemetry(systemLoadWatts: nil, externalInputWatts: nil, batteryWatts: nil)
-        }
-
-        if let telemetry = properties["PowerTelemetryData"] as? [String: Any] {
             return PowerTelemetry(
-                systemLoadWatts: milliwatts(telemetry["SystemLoad"]),
-                externalInputWatts: milliwatts(telemetry["SystemPowerIn"]),
-                batteryWatts: milliwatts(telemetry["BatteryPower"])
+                systemLoadWatts: systemLoadWatts,
+                externalInputWatts: externalInputWatts,
+                batteryWatts: nil
             )
         }
 
+        let batteryWatts: Double?
+        if isCharging {
+            batteryWatts = readChargingBatteryWatts(from: properties)
+                ?? powerDifference(
+                    externalInputWatts: externalInputWatts,
+                    systemLoadWatts: systemLoadWatts
+                )
+                ?? readBatteryWatts(from: properties).map(abs)
+        } else if !isOnACPower {
+            batteryWatts = batteryDischargeWatts.map { -$0 }
+                ?? readBatteryWatts(from: properties).map { -abs($0) }
+        } else {
+            batteryWatts = 0
+        }
+
+        return PowerTelemetry(
+            systemLoadWatts: systemLoadWatts,
+            externalInputWatts: externalInputWatts,
+            batteryWatts: batteryWatts
+        )
+    }
+
+    private static func readChargingBatteryWatts(from properties: [String: Any]) -> Double? {
+        guard let charger = properties["ChargerData"] as? [String: Any],
+              let packVoltage = (properties["Voltage"] as? NSNumber)?.doubleValue,
+              let current = (charger["ChargingCurrent"] as? NSNumber)?.doubleValue,
+              packVoltage > 0,
+              current > 0 else {
+            return nil
+        }
+        return packVoltage * current / 1_000_000
+    }
+
+    private static func powerDifference(
+        externalInputWatts: Double?,
+        systemLoadWatts: Double?
+    ) -> Double? {
+        guard let externalInputWatts, let systemLoadWatts else { return nil }
+        let value = externalInputWatts - systemLoadWatts
+        return value > 0 ? value : nil
+    }
+
+    private static func readBatteryWatts(from properties: [String: Any]) -> Double? {
         guard let voltage = (properties["Voltage"] as? NSNumber)?.int64Value else {
-            return PowerTelemetry(systemLoadWatts: nil, externalInputWatts: nil, batteryWatts: nil)
+            return nil
         }
 
         let currentNumber = (properties["InstantAmperage"] as? NSNumber)
             ?? (properties["Amperage"] as? NSNumber)
         guard let currentNumber else {
-            return PowerTelemetry(systemLoadWatts: nil, externalInputWatts: nil, batteryWatts: nil)
+            return nil
         }
 
-        var current = normalizedSignedMilliamps(currentNumber.int64Value)
-        if isCharging && current < 0 {
-            current = abs(current)
-        } else if !isOnACPower && current > 0 {
-            current = -current
-        }
-
-        let batteryWatts = LidAwakePolicy.batteryWatts(
+        return LidAwakePolicy.batteryWatts(
             voltageMillivolts: voltage,
-            currentMilliamps: current
+            currentMilliamps: normalizedSignedMilliamps(currentNumber.int64Value)
         )
-        return PowerTelemetry(
-            systemLoadWatts: isOnACPower ? nil : abs(batteryWatts),
-            externalInputWatts: isOnACPower ? nil : 0,
-            batteryWatts: batteryWatts
-        )
-    }
-
-    private static func milliwatts(_ value: Any?) -> Double? {
-        guard let number = value as? NSNumber else { return nil }
-        return number.doubleValue / 1_000
     }
 
     private static func normalizedSignedMilliamps(_ rawValue: Int64) -> Int64 {
@@ -182,14 +224,14 @@ enum BatteryTextFormatter {
         return "已接通电源，暂未充电"
     }
 
-    static func watts(_ value: Double?, signed: Bool = false) -> String {
+    static func watts(_ value: Double?) -> String {
         guard let value else { return "—" }
         if abs(value) < 0.05 { return "0.0 W" }
-        return String(format: signed ? "%+.1f W" : "%.1f W", value)
+        return String(format: "%.1f W", value)
     }
 
-    static func adapterCapacity(_ watts: Int?) -> String {
-        watts.map { "适配器能力  \($0) W" } ?? "未连接适配器"
+    static func powerTitle(adapterCapacityWatts: Int?) -> String {
+        adapterCapacityWatts.map { "电源 \($0)W" } ?? "电源"
     }
 
     private static func duration(_ totalMinutes: Int) -> String {
@@ -437,13 +479,12 @@ final class BatterySummaryView: NSView {
     private let gauge = BatteryGaugeView(frame: .zero)
     private let percentageLabel = NSTextField(labelWithString: "—")
     private let estimateLabel = NSTextField(labelWithString: "正在读取电池…")
-    private let systemTitle = NSTextField(labelWithString: "整机负载")
-    private let externalTitle = NSTextField(labelWithString: "外部输入")
+    private let systemTitle = NSTextField(labelWithString: "电脑")
+    private let externalTitle = NSTextField(labelWithString: "电源")
     private let batteryTitle = NSTextField(labelWithString: "电池")
     private let systemValue = NSTextField(labelWithString: "—")
     private let externalValue = NSTextField(labelWithString: "—")
     private let batteryValue = NSTextField(labelWithString: "—")
-    private let adapterLabel = NSTextField(labelWithString: "")
     private let horizontalRule = NSBox()
     private let firstVerticalRule = NSBox()
     private let secondVerticalRule = NSBox()
@@ -451,12 +492,19 @@ final class BatterySummaryView: NSView {
     override var isFlipped: Bool { true }
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: 278, height: 142))
+        super.init(frame: NSRect(x: 0, y: 0, width: 278, height: 116))
 
         gauge.translatesAutoresizingMaskIntoConstraints = false
         percentageLabel.translatesAutoresizingMaskIntoConstraints = false
         estimateLabel.translatesAutoresizingMaskIntoConstraints = false
-        let metricLabels = [systemTitle, externalTitle, batteryTitle, systemValue, externalValue, batteryValue, adapterLabel]
+        let metricLabels = [
+            systemTitle,
+            externalTitle,
+            batteryTitle,
+            systemValue,
+            externalValue,
+            batteryValue,
+        ]
         for label in metricLabels {
             label.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -469,14 +517,13 @@ final class BatterySummaryView: NSView {
         estimateLabel.font = .systemFont(ofSize: 12, weight: .regular)
         estimateLabel.textColor = .secondaryLabelColor
         estimateLabel.lineBreakMode = .byTruncatingTail
-        for title in [systemTitle, externalTitle, batteryTitle, adapterLabel] {
+        for title in [systemTitle, externalTitle, batteryTitle] {
             title.font = .systemFont(ofSize: 11, weight: .regular)
             title.textColor = .secondaryLabelColor
         }
         for value in [systemValue, externalValue, batteryValue] {
             value.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         }
-
         addSubview(gauge)
         addSubview(percentageLabel)
         addSubview(estimateLabel)
@@ -487,7 +534,7 @@ final class BatterySummaryView: NSView {
 
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: 278),
-            heightAnchor.constraint(equalToConstant: 142),
+            heightAnchor.constraint(equalToConstant: 116),
             gauge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             gauge.topAnchor.constraint(equalTo: topAnchor, constant: 18),
             gauge.widthAnchor.constraint(equalToConstant: 42),
@@ -502,29 +549,26 @@ final class BatterySummaryView: NSView {
             horizontalRule.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             horizontalRule.topAnchor.constraint(equalTo: topAnchor, constant: 66),
             horizontalRule.heightAnchor.constraint(equalToConstant: 1),
-            systemTitle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            systemTitle.topAnchor.constraint(equalTo: horizontalRule.bottomAnchor, constant: 8),
-            externalTitle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 104),
-            externalTitle.topAnchor.constraint(equalTo: systemTitle.topAnchor),
+            externalTitle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            externalTitle.topAnchor.constraint(equalTo: horizontalRule.bottomAnchor, constant: 8),
+            systemTitle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 104),
+            systemTitle.topAnchor.constraint(equalTo: externalTitle.topAnchor),
             batteryTitle.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 194),
-            batteryTitle.topAnchor.constraint(equalTo: systemTitle.topAnchor),
-            systemValue.leadingAnchor.constraint(equalTo: systemTitle.leadingAnchor),
-            systemValue.topAnchor.constraint(equalTo: systemTitle.bottomAnchor, constant: 2),
+            batteryTitle.topAnchor.constraint(equalTo: externalTitle.topAnchor),
             externalValue.leadingAnchor.constraint(equalTo: externalTitle.leadingAnchor),
             externalValue.topAnchor.constraint(equalTo: externalTitle.bottomAnchor, constant: 2),
+            systemValue.leadingAnchor.constraint(equalTo: systemTitle.leadingAnchor),
+            systemValue.topAnchor.constraint(equalTo: systemTitle.bottomAnchor, constant: 2),
             batteryValue.leadingAnchor.constraint(equalTo: batteryTitle.leadingAnchor),
             batteryValue.topAnchor.constraint(equalTo: batteryTitle.bottomAnchor, constant: 2),
             firstVerticalRule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 91),
             firstVerticalRule.widthAnchor.constraint(equalToConstant: 1),
             firstVerticalRule.topAnchor.constraint(equalTo: horizontalRule.bottomAnchor, constant: 8),
-            firstVerticalRule.bottomAnchor.constraint(equalTo: adapterLabel.topAnchor, constant: -4),
+            firstVerticalRule.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
             secondVerticalRule.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 181),
             secondVerticalRule.widthAnchor.constraint(equalToConstant: 1),
             secondVerticalRule.topAnchor.constraint(equalTo: firstVerticalRule.topAnchor),
             secondVerticalRule.bottomAnchor.constraint(equalTo: firstVerticalRule.bottomAnchor),
-            adapterLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            adapterLabel.topAnchor.constraint(equalTo: topAnchor, constant: 119),
-            adapterLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
         ])
     }
 
@@ -538,10 +582,10 @@ final class BatterySummaryView: NSView {
             gauge.isCharging = false
             percentageLabel.stringValue = "—"
             estimateLabel.stringValue = "正在读取电池…"
+            externalTitle.stringValue = "电源"
             systemValue.stringValue = "—"
             externalValue.stringValue = "—"
             batteryValue.stringValue = "—"
-            adapterLabel.stringValue = ""
             return
         }
 
@@ -552,12 +596,14 @@ final class BatterySummaryView: NSView {
             for: snapshot,
             chargeLimit: chargeLimit
         )
+        externalTitle.stringValue = BatteryTextFormatter.powerTitle(
+            adapterCapacityWatts: snapshot.adapterCapacityWatts
+        )
         systemValue.stringValue = BatteryTextFormatter.watts(snapshot.systemLoadWatts)
         externalValue.stringValue = BatteryTextFormatter.watts(snapshot.externalInputWatts)
-        batteryValue.stringValue = BatteryTextFormatter.watts(snapshot.batteryWatts, signed: true)
-        adapterLabel.stringValue = BatteryTextFormatter.adapterCapacity(snapshot.adapterCapacityWatts)
+        batteryValue.stringValue = BatteryTextFormatter.watts(snapshot.batteryWatts)
         setAccessibilityLabel(
-            "电池 \(snapshot.percentage)%，\(estimateLabel.stringValue)，整机负载 \(systemValue.stringValue)，外部输入 \(externalValue.stringValue)，电池 \(batteryValue.stringValue)，\(adapterLabel.stringValue)"
+            "电池 \(snapshot.percentage)%，\(estimateLabel.stringValue)，电源输入 \(externalValue.stringValue)，电脑 \(systemValue.stringValue)，电池 \(batteryValue.stringValue)"
         )
     }
 }

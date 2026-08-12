@@ -128,17 +128,18 @@ enum BatteryReader {
 
         let batteryWatts: Double?
         if isCharging {
-            batteryWatts = readChargingBatteryWatts(from: properties)
+            // Use the live SMC battery rail first. The AppleSmartBattery
+            // telemetry fields below are intentionally only fallbacks because
+            // their aggregate BatteryPower value is cached by macOS.
+            batteryWatts = batteryDischargeWatts
+                ?? readChargingBatteryWatts(from: properties)
                 ?? powerDifference(
                     externalInputWatts: externalInputWatts,
                     systemLoadWatts: systemLoadWatts
                 )
-                ?? readBatteryWatts(from: properties).map(abs)
-        } else if !isOnACPower {
+        } else {
             batteryWatts = batteryDischargeWatts.map { -$0 }
                 ?? readBatteryWatts(from: properties).map { -abs($0) }
-        } else {
-            batteryWatts = 0
         }
 
         return PowerTelemetry(

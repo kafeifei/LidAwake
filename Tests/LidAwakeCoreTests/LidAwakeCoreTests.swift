@@ -94,6 +94,137 @@ final class LidAwakeCoreTests: XCTestCase {
         XCTAssertEqual(LidAwakePolicy.batteryFlow(forWatts: nil), .unknown)
     }
 
+    func testBatteryFlowResolutionUsesOnePointFiveWattThreshold() {
+        XCTAssertEqual(
+            LidAwakePolicy.resolvedBatteryFlow(
+                systemLoadWatts: 30,
+                externalInputWatts: 20,
+                displayedBatteryWatts: 1,
+                systemIsCharging: true
+            ),
+            .discharging
+        )
+        XCTAssertEqual(
+            LidAwakePolicy.resolvedBatteryFlow(
+                systemLoadWatts: 20,
+                externalInputWatts: 50,
+                displayedBatteryWatts: 1,
+                systemIsCharging: false
+            ),
+            .charging
+        )
+        XCTAssertEqual(
+            LidAwakePolicy.resolvedBatteryFlow(
+                systemLoadWatts: 20,
+                externalInputWatts: 22.5,
+                displayedBatteryWatts: 1,
+                systemIsCharging: false
+            ),
+            .idle
+        )
+        XCTAssertEqual(
+            LidAwakePolicy.resolvedBatteryFlow(
+                systemLoadWatts: nil,
+                externalInputWatts: nil,
+                displayedBatteryWatts: nil,
+                systemIsCharging: false
+            ),
+            .idle
+        )
+    }
+
+    func testBatteryFlowResolverRejectsUnsynchronizedSingleFrameEvidence() {
+        var resolver = BatteryFlowResolver()
+        let samples: [(system: Double, input: Double, battery: Double)] = [
+            (14.453, 12.499, 0.524),
+            (27.898, 30.707, 0.548),
+            (30.707, 27.169, 0.549),
+            (28.603, 39.812, 0.545),
+            (39.812, 46.032, 0.618),
+            (46.032, 41.950, 0.615),
+            (35.986, 35.377, 0.597),
+            (16.403, 18.741, 0.553),
+            (18.741, 20.616, 0.590),
+            (20.616, 32.200, 0.575),
+            (32.200, 19.786, 0.576),
+        ]
+
+        for sample in samples {
+            XCTAssertEqual(
+                resolver.resolve(
+                    systemLoadWatts: sample.system,
+                    externalInputWatts: sample.input,
+                    displayedBatteryWatts: sample.battery,
+                    systemIsCharging: false,
+                    isOnACPower: true
+                ),
+                .idle
+            )
+        }
+    }
+
+    func testBatteryFlowResolverConfirmsPersistentChangesAndHandlesACDisconnect() {
+        var resolver = BatteryFlowResolver()
+        XCTAssertEqual(
+            resolver.resolve(
+                systemLoadWatts: 20,
+                externalInputWatts: 20,
+                displayedBatteryWatts: 1,
+                systemIsCharging: false,
+                isOnACPower: true
+            ),
+            .idle
+        )
+
+        for sample in 1...3 {
+            XCTAssertEqual(
+                resolver.resolve(
+                    systemLoadWatts: 20,
+                    externalInputWatts: 50,
+                    displayedBatteryWatts: 1,
+                    systemIsCharging: false,
+                    isOnACPower: true
+                ),
+                sample < 3 ? .idle : .charging
+            )
+        }
+
+        XCTAssertEqual(
+            resolver.resolve(
+                systemLoadWatts: 40,
+                externalInputWatts: 20,
+                displayedBatteryWatts: 1,
+                systemIsCharging: false,
+                isOnACPower: true
+            ),
+            .charging
+        )
+
+        for sample in 1...3 {
+            XCTAssertEqual(
+                resolver.resolve(
+                    systemLoadWatts: 20,
+                    externalInputWatts: 20,
+                    displayedBatteryWatts: 1,
+                    systemIsCharging: false,
+                    isOnACPower: true
+                ),
+                sample < 3 ? .charging : .idle
+            )
+        }
+
+        XCTAssertEqual(
+            resolver.resolve(
+                systemLoadWatts: 40,
+                externalInputWatts: 0,
+                displayedBatteryWatts: 1,
+                systemIsCharging: false,
+                isOnACPower: false
+            ),
+            .discharging
+        )
+    }
+
     func testChargeTimeUsesConfiguredTarget() {
         XCTAssertEqual(
             BatteryChargeTimeEstimator.minutesToTarget(

@@ -23,8 +23,11 @@ struct BatterySnapshot {
 
 enum BatteryReader {
     private static let systemPowerSensor = SystemPowerSensor()
+    private static var batteryFlowResolver = BatteryFlowResolver()
 
     private struct PowerTelemetry {
+        let isCharging: Bool
+        let isOnACPower: Bool
         let systemLoadWatts: Double?
         let externalInputWatts: Double?
         let batteryWatts: Double?
@@ -58,9 +61,9 @@ enum BatteryReader {
 
             return BatterySnapshot(
                 percentage: Int((current / maximum * 100).rounded()),
-                isCharging: isCharging,
+                isCharging: telemetry.isCharging,
                 isCharged: isCharged,
-                isOnACPower: isOnACPower,
+                isOnACPower: telemetry.isOnACPower,
                 timeToEmptyMinutes: timeToEmpty,
                 timeToFullMinutes: timeToFull,
                 adapterCapacityWatts: readAdapterCapacityWatts(),
@@ -96,6 +99,8 @@ enum BatteryReader {
 
         guard let matching = IOServiceMatching("AppleSmartBattery") else {
             return PowerTelemetry(
+                isCharging: isCharging,
+                isOnACPower: isOnACPower,
                 systemLoadWatts: systemLoadWatts,
                 externalInputWatts: externalInputWatts,
                 batteryWatts: nil
@@ -104,6 +109,8 @@ enum BatteryReader {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
         guard service != IO_OBJECT_NULL else {
             return PowerTelemetry(
+                isCharging: isCharging,
+                isOnACPower: isOnACPower,
                 systemLoadWatts: systemLoadWatts,
                 externalInputWatts: externalInputWatts,
                 batteryWatts: nil
@@ -120,29 +127,40 @@ enum BatteryReader {
         ) == KERN_SUCCESS,
         let properties = unmanagedProperties?.takeRetainedValue() as? [String: Any] else {
             return PowerTelemetry(
+                isCharging: isCharging,
+                isOnACPower: isOnACPower,
                 systemLoadWatts: systemLoadWatts,
                 externalInputWatts: externalInputWatts,
                 batteryWatts: nil
             )
         }
 
+        let registryIsOnACPower = (properties["ExternalConnected"] as? NSNumber)?.boolValue
+            ?? isOnACPower
+
+        let flow = batteryFlowResolver.resolve(
+            systemLoadWatts: systemLoadWatts,
+            externalInputWatts: externalInputWatts,
+            displayedBatteryWatts: batteryDischargeWatts,
+            systemIsCharging: isCharging,
+            isOnACPower: registryIsOnACPower
+        )
+        let resolvedIsCharging = flow == .charging
         let batteryWatts: Double?
-        if isCharging {
-            // Use the live SMC battery rail first. The AppleSmartBattery
-            // telemetry fields below are intentionally only fallbacks because
-            // their aggregate BatteryPower value is cached by macOS.
-            batteryWatts = batteryDischargeWatts
-                ?? readChargingBatteryWatts(from: properties)
-                ?? powerDifference(
-                    externalInputWatts: externalInputWatts,
-                    systemLoadWatts: systemLoadWatts
-                )
-        } else {
-            batteryWatts = batteryDischargeWatts.map { -$0 }
-                ?? readBatteryWatts(from: properties).map { -abs($0) }
+        switch flow {
+        case .charging:
+            batteryWatts = readChargingBatteryWatts(from: properties)
+        case .discharging:
+            batteryWatts = batteryDischargeWatts.map { -abs($0) }
+        case .idle:
+            batteryWatts = 0
+        case .unknown:
+            batteryWatts = nil
         }
 
         return PowerTelemetry(
+            isCharging: resolvedIsCharging,
+            isOnACPower: registryIsOnACPower,
             systemLoadWatts: systemLoadWatts,
             externalInputWatts: externalInputWatts,
             batteryWatts: batteryWatts
@@ -151,38 +169,16 @@ enum BatteryReader {
 
     private static func readChargingBatteryWatts(from properties: [String: Any]) -> Double? {
         guard let charger = properties["ChargerData"] as? [String: Any],
-              let packVoltage = (properties["Voltage"] as? NSNumber)?.doubleValue,
-              let current = (charger["ChargingCurrent"] as? NSNumber)?.doubleValue,
-              packVoltage > 0,
-              current > 0 else {
+              let voltage = (properties["Voltage"] as? NSNumber)?.int64Value,
+              let currentNumber = charger["ChargingCurrent"] as? NSNumber,
+              voltage > 0 else {
             return nil
         }
-        return packVoltage * current / 1_000_000
-    }
-
-    private static func powerDifference(
-        externalInputWatts: Double?,
-        systemLoadWatts: Double?
-    ) -> Double? {
-        guard let externalInputWatts, let systemLoadWatts else { return nil }
-        let value = externalInputWatts - systemLoadWatts
-        return value > 0 ? value : nil
-    }
-
-    private static func readBatteryWatts(from properties: [String: Any]) -> Double? {
-        guard let voltage = (properties["Voltage"] as? NSNumber)?.int64Value else {
-            return nil
-        }
-
-        let currentNumber = (properties["InstantAmperage"] as? NSNumber)
-            ?? (properties["Amperage"] as? NSNumber)
-        guard let currentNumber else {
-            return nil
-        }
-
+        let current = normalizedSignedMilliamps(currentNumber.int64Value)
+        guard current >= 0 else { return nil }
         return LidAwakePolicy.batteryWatts(
             voltageMillivolts: voltage,
-            currentMilliamps: normalizedSignedMilliamps(currentNumber.int64Value)
+            currentMilliamps: current
         )
     }
 
@@ -192,6 +188,7 @@ enum BatteryReader {
         }
         return rawValue
     }
+
 }
 
 enum BatteryTextFormatter {

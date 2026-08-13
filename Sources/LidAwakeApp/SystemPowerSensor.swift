@@ -133,7 +133,7 @@ final class SystemPowerSensor {
         let value = withUnsafeBytes(of: response.bytes) { bytes in
             bytes.loadUnaligned(as: Float.self)
         }
-        guard value.isFinite, value >= 0 else { return nil }
+        guard value.isFinite else { return nil }
         return Double(value)
     }
 

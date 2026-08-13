@@ -169,6 +169,88 @@ public enum LidAwakePolicy {
         if watts < -0.05 { return .discharging }
         return .idle
     }
+
+    public static func resolvedBatteryFlow(
+        systemLoadWatts: Double?,
+        externalInputWatts: Double?,
+        displayedBatteryWatts: Double?,
+        systemIsCharging: Bool,
+        thresholdWatts: Double = 1.5
+    ) -> BatteryFlow {
+        guard let systemLoadWatts, let externalInputWatts else {
+            return systemIsCharging ? .charging : .idle
+        }
+
+        if systemLoadWatts - externalInputWatts > thresholdWatts {
+            return .discharging
+        }
+
+        if let displayedBatteryWatts,
+           externalInputWatts - systemLoadWatts - abs(displayedBatteryWatts) > thresholdWatts {
+            return .charging
+        }
+
+        return systemIsCharging ? .charging : .idle
+    }
+}
+
+public struct BatteryFlowResolver {
+    public let confirmationSamples: Int
+
+    private var confirmedFlow: BatteryFlow?
+    private var candidateFlow: BatteryFlow?
+    private var candidateSamples = 0
+
+    public init(confirmationSamples: Int = 3) {
+        self.confirmationSamples = max(1, confirmationSamples)
+    }
+
+    public mutating func resolve(
+        systemLoadWatts: Double?,
+        externalInputWatts: Double?,
+        displayedBatteryWatts: Double?,
+        systemIsCharging: Bool,
+        isOnACPower: Bool
+    ) -> BatteryFlow {
+        guard isOnACPower else {
+            confirmedFlow = .discharging
+            candidateFlow = nil
+            candidateSamples = 0
+            return .discharging
+        }
+
+        if confirmedFlow == nil {
+            confirmedFlow = systemIsCharging ? .charging : .idle
+        }
+
+        let observedFlow = LidAwakePolicy.resolvedBatteryFlow(
+            systemLoadWatts: systemLoadWatts,
+            externalInputWatts: externalInputWatts,
+            displayedBatteryWatts: displayedBatteryWatts,
+            systemIsCharging: systemIsCharging
+        )
+
+        guard observedFlow != confirmedFlow else {
+            candidateFlow = nil
+            candidateSamples = 0
+            return confirmedFlow!
+        }
+
+        if candidateFlow == observedFlow {
+            candidateSamples += 1
+        } else {
+            candidateFlow = observedFlow
+            candidateSamples = 1
+        }
+
+        if candidateSamples >= confirmationSamples {
+            confirmedFlow = observedFlow
+            candidateFlow = nil
+            candidateSamples = 0
+        }
+
+        return confirmedFlow!
+    }
 }
 
 public enum BatteryChargeTimeEstimator {

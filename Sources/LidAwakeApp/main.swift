@@ -229,6 +229,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         action: nil,
         keyEquivalent: ""
     )
+    private let checkForUpdatesMenuItem = NSMenuItem(
+        title: "检查更新…",
+        action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+        keyEquivalent: ""
+    )
     private var chargeLimitView: ChargeLimitView?
     private var timer: Timer?
     private var setupError: (state: String, detail: String)?
@@ -237,11 +242,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var menuState = MenuState.starting("正在确认状态…")
     private var batteryAwakeSubmenuShowsStop = false
     private let clamshellMonitor = ClamshellMonitor()
-    private let updaterController = SPUStandardUpdaterController(
+    /// Lazy so the user driver delegate (`self`) exists before the updater starts; the first
+    /// access happens in `configureMenu()`, so the updater still starts at launch.
+    private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
         updaterDelegate: nil,
-        userDriverDelegate: nil
+        userDriverDelegate: self
     )
+    /// Set when a scheduled check found an update we chose not to pop a window for.
+    private var pendingUpdateVersion: String?
     private var latestStatus: HelperStatus?
     private var lidCloseCheckIsScheduled = false
 
@@ -361,13 +370,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu.addItem(loginItemMenuItem)
         menu.addItem(.separator())
 
-        let checkForUpdatesItem = NSMenuItem(
-            title: "检查更新…",
-            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-            keyEquivalent: ""
-        )
-        checkForUpdatesItem.target = updaterController
-        menu.addItem(checkForUpdatesItem)
+        checkForUpdatesMenuItem.target = updaterController
+        updateCheckForUpdatesMenuItem()
+        menu.addItem(checkForUpdatesMenuItem)
         menu.addItem(.separator())
 
         let batterySettingsItem = NSMenuItem(
@@ -443,6 +448,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private func refreshStatus() {
         batterySnapshot = BatteryReader.read()
         summaryView.update(with: batterySnapshot, chargeLimit: chargeLimit)
+        updateCheckForUpdatesMenuItem()
         updateStatusButton()
 
         if let setupError {
@@ -521,25 +527,37 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private func updateStatusButton() {
         guard let button = statusItem.button else { return }
+        let showsUpdateBadge = pendingUpdateVersion != nil
+        // Read the live appearance every tick so the badged icon follows light/dark changes.
+        let appearance = showsUpdateBadge ? button.effectiveAppearance : nil
+        let updateSuffix = pendingUpdateVersion.map { " · 有新版本 \($0)" } ?? ""
         if let snapshot = batterySnapshot {
             button.image = BatteryMenuBarIcon.make(
                 percentage: snapshot.percentage,
                 isCharging: snapshot.isCharging,
-                isOnACPower: snapshot.isOnACPower
+                isOnACPower: snapshot.isOnACPower,
+                showsUpdateBadge: showsUpdateBadge,
+                appearance: appearance
             )
             button.title = ""
-            button.setAccessibilityLabel("电池 \(snapshot.percentage)%，\(menuState.text)")
-            button.toolTip = "电池 \(snapshot.percentage)% · \(menuState.text)"
+            button.setAccessibilityLabel("电池 \(snapshot.percentage)%，\(menuState.text)\(updateSuffix)")
+            button.toolTip = "电池 \(snapshot.percentage)% · \(menuState.text)\(updateSuffix)"
         } else {
             button.image = BatteryMenuBarIcon.make(
                 percentage: nil,
                 isCharging: false,
-                isOnACPower: false
+                isOnACPower: false,
+                showsUpdateBadge: showsUpdateBadge,
+                appearance: appearance
             )
             button.title = ""
-            button.setAccessibilityLabel(menuState.text)
-            button.toolTip = menuState.text
+            button.setAccessibilityLabel(menuState.text + updateSuffix)
+            button.toolTip = menuState.text + updateSuffix
         }
+    }
+
+    private func updateCheckForUpdatesMenuItem() {
+        checkForUpdatesMenuItem.title = pendingUpdateVersion.map { "有新版本 \($0)…" } ?? "检查更新…"
     }
 
     private func ensureConfigurationExists() throws {
@@ -678,6 +696,45 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func quitMenuBar() {
         NSApp.terminate(nil)
+    }
+
+    fileprivate func setPendingUpdateVersion(_ version: String?) {
+        guard pendingUpdateVersion != version else { return }
+        pendingUpdateVersion = version
+        updateCheckForUpdatesMenuItem()
+        updateStatusButton()
+    }
+}
+
+/// Scheduled checks stay quiet: instead of Sparkle's window we badge the menu bar icon and
+/// retitle the update menu item, which still opens Sparkle's own dialog when clicked.
+extension AppDelegate: SPUStandardUserDriverDelegate {
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem,
+        andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        false
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        guard !state.userInitiated else { return }
+        // `displayVersionString` already falls back to `versionString` when the appcast
+        // carries no short version string.
+        setPendingUpdateVersion(update.displayVersionString)
+    }
+
+    func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        setPendingUpdateVersion(nil)
+    }
+
+    func standardUserDriverWillFinishUpdateSession() {
+        setPendingUpdateVersion(nil)
     }
 }
 

@@ -242,111 +242,183 @@ enum BatteryTextFormatter {
 }
 
 enum BatteryMenuBarIcon {
+    private static let size = NSSize(width: 27, height: 18)
+
     // Geometry and state treatment adapted from Stats' MIT-licensed BatteryWidget.
     // See THIRD_PARTY_NOTICES.md and https://github.com/exelban/stats.
-    static func make(percentage: Int?, isCharging: Bool, isOnACPower: Bool) -> NSImage {
-        let image = NSImage(size: NSSize(width: 27, height: 18), flipped: false) { _ in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-
-            let batterySize = NSSize(width: 22, height: 12)
-            let borderWidth: CGFloat = 1
-            let offset: CGFloat = 0.5
-            let batteryFrame = NSBezierPath(
-                roundedRect: NSRect(
-                    x: borderWidth + offset,
-                    y: ((18 - batterySize.height) / 2) + offset,
-                    width: batterySize.width - borderWidth,
-                    height: batterySize.height - borderWidth
-                ),
-                xRadius: 2,
-                yRadius: 2
-            )
-
-            NSColor.black.withAlphaComponent(0.5).setStroke()
-            batteryFrame.lineWidth = borderWidth
-            batteryFrame.stroke()
-
-            let terminalRect = NSRect(
-                x: batteryFrame.bounds.maxX + 1,
-                y: batteryFrame.bounds.midY - 2,
-                width: 2,
-                height: 4
-            )
-            let terminal = NSBezierPath()
-            terminal.move(to: terminalRect.origin)
-            terminal.line(to: NSPoint(x: terminalRect.maxX - 1, y: terminalRect.minY))
-            terminal.appendArc(
-                withCenter: NSPoint(x: terminalRect.maxX - 1, y: terminalRect.minY + 1),
-                radius: 1,
-                startAngle: -90,
-                endAngle: 0
-            )
-            terminal.line(to: NSPoint(x: terminalRect.maxX, y: terminalRect.maxY - 1))
-            terminal.appendArc(
-                withCenter: NSPoint(x: terminalRect.maxX - 1, y: terminalRect.maxY - 1),
-                radius: 1,
-                startAngle: 0,
-                endAngle: 90
-            )
-            terminal.line(to: NSPoint(x: terminalRect.minX, y: terminalRect.maxY))
-            terminal.close()
-            NSColor.black.withAlphaComponent(0.5).setFill()
-            terminal.fill()
-
-            if let percentage {
-                let clamped = min(max(percentage, 0), 100)
-                let fraction = CGFloat(clamped) / 100
-                let maxWidth: CGFloat = 18
-                let innerRect = NSRect(
-                    x: batteryFrame.bounds.minX + 1.5,
-                    y: batteryFrame.bounds.minY + 1.5,
-                    width: max(1, maxWidth * fraction),
-                    height: 8
+    /// Without a badge the icon stays a template image, so the menu bar tints it as before.
+    /// A red dot cannot survive that tinting, so the badged icon is drawn in the button's own
+    /// appearance instead; `appearance` is read by the caller on every refresh.
+    static func make(
+        percentage: Int?,
+        isCharging: Bool,
+        isOnACPower: Bool,
+        showsUpdateBadge: Bool = false,
+        appearance: NSAppearance? = nil
+    ) -> NSImage {
+        guard showsUpdateBadge else {
+            let image = NSImage(size: size, flipped: false) { _ in
+                drawBattery(
+                    percentage: percentage,
+                    isCharging: isCharging,
+                    isOnACPower: isOnACPower,
+                    tint: .black
                 )
+            }
+            image.isTemplate = true
+            return image
+        }
 
-                if !isOnACPower {
-                    let underlay = NSBezierPath(
-                        roundedRect: NSRect(
-                            x: innerRect.minX,
-                            y: innerRect.minY,
-                            width: maxWidth,
-                            height: innerRect.height
-                        ),
-                        xRadius: 1,
-                        yRadius: 1
-                    )
-                    NSColor.black.withAlphaComponent(0.5).setFill()
-                    underlay.fill()
-                }
-
-                NSColor.black.setFill()
-                NSBezierPath(roundedRect: innerRect, xRadius: 1, yRadius: 1).fill()
-
-                if isOnACPower {
-                    drawPowerState(
-                        in: context,
-                        center: NSPoint(x: batteryFrame.bounds.midX, y: batteryFrame.bounds.midY),
-                        charging: isCharging
-                    )
-                } else {
-                    drawPercentage(clamped, in: context, rect: NSRect(
-                        x: innerRect.minX,
-                        y: 4,
-                        width: maxWidth,
-                        height: 10
-                    ))
-                }
+        let image = NSImage(size: size, flipped: false) { _ in
+            var drawn = false
+            let draw = {
+                drawn = drawBattery(
+                    percentage: percentage,
+                    isCharging: isCharging,
+                    isOnACPower: isOnACPower,
+                    tint: .labelColor
+                )
+                guard drawn else { return }
+                drawUpdateBadge()
+            }
+            if let appearance {
+                appearance.performAsCurrentDrawingAppearance(draw)
             } else {
-                drawUnknown(in: context, center: NSPoint(
-                    x: batteryFrame.bounds.midX,
-                    y: batteryFrame.bounds.midY
-                ))
+                draw()
+            }
+            return drawn
+        }
+        image.isTemplate = false
+        return image
+    }
+
+    /// A filled red dot in the top-right corner, with the artwork behind it cleared so the
+    /// dot keeps a visible gap from the battery outline.
+    private static func drawUpdateBadge() {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let diameter: CGFloat = 6
+        let inset: CGFloat = 0.5
+        let badgeRect = NSRect(
+            x: size.width - diameter - inset,
+            y: size.height - diameter - inset,
+            width: diameter,
+            height: diameter
+        )
+
+        context.saveGState()
+        context.setBlendMode(.clear)
+        NSBezierPath(ovalIn: badgeRect.insetBy(dx: -1, dy: -1)).fill()
+        context.restoreGState()
+
+        NSColor.systemRed.setFill()
+        NSBezierPath(ovalIn: badgeRect).fill()
+    }
+
+    private static func drawBattery(
+        percentage: Int?,
+        isCharging: Bool,
+        isOnACPower: Bool,
+        tint: NSColor
+    ) -> Bool {
+        guard let context = NSGraphicsContext.current?.cgContext else { return false }
+
+        let batterySize = NSSize(width: 22, height: 12)
+        let borderWidth: CGFloat = 1
+        let offset: CGFloat = 0.5
+        let batteryFrame = NSBezierPath(
+            roundedRect: NSRect(
+                x: borderWidth + offset,
+                y: ((18 - batterySize.height) / 2) + offset,
+                width: batterySize.width - borderWidth,
+                height: batterySize.height - borderWidth
+            ),
+            xRadius: 2,
+            yRadius: 2
+        )
+
+        tint.withAlphaComponent(0.5).setStroke()
+        batteryFrame.lineWidth = borderWidth
+        batteryFrame.stroke()
+
+        let terminalRect = NSRect(
+            x: batteryFrame.bounds.maxX + 1,
+            y: batteryFrame.bounds.midY - 2,
+            width: 2,
+            height: 4
+        )
+        let terminal = NSBezierPath()
+        terminal.move(to: terminalRect.origin)
+        terminal.line(to: NSPoint(x: terminalRect.maxX - 1, y: terminalRect.minY))
+        terminal.appendArc(
+            withCenter: NSPoint(x: terminalRect.maxX - 1, y: terminalRect.minY + 1),
+            radius: 1,
+            startAngle: -90,
+            endAngle: 0
+        )
+        terminal.line(to: NSPoint(x: terminalRect.maxX, y: terminalRect.maxY - 1))
+        terminal.appendArc(
+            withCenter: NSPoint(x: terminalRect.maxX - 1, y: terminalRect.maxY - 1),
+            radius: 1,
+            startAngle: 0,
+            endAngle: 90
+        )
+        terminal.line(to: NSPoint(x: terminalRect.minX, y: terminalRect.maxY))
+        terminal.close()
+        tint.withAlphaComponent(0.5).setFill()
+        terminal.fill()
+
+        if let percentage {
+            let clamped = min(max(percentage, 0), 100)
+            let fraction = CGFloat(clamped) / 100
+            let maxWidth: CGFloat = 18
+            let innerRect = NSRect(
+                x: batteryFrame.bounds.minX + 1.5,
+                y: batteryFrame.bounds.minY + 1.5,
+                width: max(1, maxWidth * fraction),
+                height: 8
+            )
+
+            if !isOnACPower {
+                let underlay = NSBezierPath(
+                    roundedRect: NSRect(
+                        x: innerRect.minX,
+                        y: innerRect.minY,
+                        width: maxWidth,
+                        height: innerRect.height
+                    ),
+                    xRadius: 1,
+                    yRadius: 1
+                )
+                tint.withAlphaComponent(0.5).setFill()
+                underlay.fill()
             }
 
-            return true
+            tint.setFill()
+            NSBezierPath(roundedRect: innerRect, xRadius: 1, yRadius: 1).fill()
+
+            if isOnACPower {
+                drawPowerState(
+                    in: context,
+                    center: NSPoint(x: batteryFrame.bounds.midX, y: batteryFrame.bounds.midY),
+                    charging: isCharging,
+                    tint: tint
+                )
+            } else {
+                drawPercentage(clamped, in: context, rect: NSRect(
+                    x: innerRect.minX,
+                    y: 4,
+                    width: maxWidth,
+                    height: 10
+                ))
+            }
+        } else {
+            drawUnknown(in: context, center: NSPoint(
+                x: batteryFrame.bounds.midX,
+                y: batteryFrame.bounds.midY
+            ), tint: tint)
         }
-        image.isTemplate = true
-        return image
+
+        return true
     }
 
     private static func drawPercentage(_ percentage: Int, in context: CGContext, rect: NSRect) {
@@ -366,20 +438,25 @@ enum BatteryMenuBarIcon {
         context.restoreGState()
     }
 
-    private static func drawUnknown(in context: CGContext, center: NSPoint) {
+    private static func drawUnknown(in context: CGContext, center: NSPoint, tint: NSColor) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         NSAttributedString(
             string: "?",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: NSColor.black,
+                .foregroundColor: tint,
                 .paragraphStyle: paragraph,
             ]
         ).draw(in: NSRect(x: center.x - 4, y: center.y - 6, width: 8, height: 12))
     }
 
-    private static func drawPowerState(in context: CGContext, center: NSPoint, charging: Bool) {
+    private static func drawPowerState(
+        in context: CGContext,
+        center: NSPoint,
+        charging: Bool,
+        tint: NSColor
+    ) {
         let points: [NSPoint]
         if charging {
             let min = NSPoint(x: center.x - 4.5, y: center.y - 9)
@@ -421,7 +498,7 @@ enum BatteryMenuBarIcon {
         for point in points.dropFirst() { path.line(to: point) }
         path.close()
 
-        NSColor.black.setFill()
+        tint.setFill()
         path.fill()
 
         context.saveGState()

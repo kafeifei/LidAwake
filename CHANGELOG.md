@@ -2,6 +2,10 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## 0.2.3 - 2026-09-17
+
+- Background update checks now download, install and relaunch on their own: `SUAutomaticallyUpdate` is on by default and the app takes over Sparkle's install-on-quit handler, running it as soon as the status menu is closed instead of waiting for a quit that a menu bar app rarely sees. The red dot and “有新版本 X.Y.Z…” item remain as the fallback when automatic install is off or not allowed, and a new “自动安装更新” menu item toggles it.
+
 ## 0.2.2 - 2026-09-17
 
 - Scheduled Sparkle update checks no longer interrupt with a window: a new version now shows up as a red dot on the menu bar battery icon and a “有新版本 X.Y.Z…” menu item that opens Sparkle's usual update dialog when clicked; the dot clears once the update has been seen or the update session ends. Manual “检查更新…” is unchanged.

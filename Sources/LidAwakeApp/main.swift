@@ -234,6 +234,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
         keyEquivalent: ""
     )
+    private let automaticUpdateMenuItem = NSMenuItem(
+        title: "自动安装更新",
+        action: nil,
+        keyEquivalent: ""
+    )
     private var chargeLimitView: ChargeLimitView?
     private var timer: Timer?
     private var setupError: (state: String, detail: String)?
@@ -242,15 +247,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var menuState = MenuState.starting("正在确认状态…")
     private var batteryAwakeSubmenuShowsStop = false
     private let clamshellMonitor = ClamshellMonitor()
-    /// Lazy so the user driver delegate (`self`) exists before the updater starts; the first
+    /// Lazy so the delegates (`self`) exist before the updater starts; the first
     /// access happens in `configureMenu()`, so the updater still starts at launch.
     private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
-        updaterDelegate: nil,
+        updaterDelegate: self,
         userDriverDelegate: self
     )
     /// Set when a scheduled check found an update we chose not to pop a window for.
     private var pendingUpdateVersion: String?
+    /// Sparkle's "install now and relaunch" handler for an automatically downloaded update.
+    /// Held only until the status menu is off screen, so the app never restarts mid-click.
+    private var pendingImmediateInstall: (() -> Void)?
+    private var menuIsOpen = false
     private var latestStatus: HelperStatus?
     private var lidCloseCheckIsScheduled = false
 
@@ -371,8 +380,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu.addItem(.separator())
 
         checkForUpdatesMenuItem.target = updaterController
-        updateCheckForUpdatesMenuItem()
         menu.addItem(checkForUpdatesMenuItem)
+        automaticUpdateMenuItem.target = self
+        automaticUpdateMenuItem.action = #selector(toggleAutomaticUpdates)
+        menu.addItem(automaticUpdateMenuItem)
+        updateUpdateMenuItems()
         menu.addItem(.separator())
 
         let batterySettingsItem = NSMenuItem(
@@ -395,9 +407,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
         refreshLoginItemRegistration()
         chargeLimitView?.refresh()
         refreshStatus()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        installPendingUpdateIfIdle()
     }
 
     private func refreshLoginItemRegistration() {
@@ -448,7 +466,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private func refreshStatus() {
         batterySnapshot = BatteryReader.read()
         summaryView.update(with: batterySnapshot, chargeLimit: chargeLimit)
-        updateCheckForUpdatesMenuItem()
+        updateUpdateMenuItems()
         updateStatusButton()
 
         if let setupError {
@@ -556,8 +574,26 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
     }
 
-    private func updateCheckForUpdatesMenuItem() {
+    private func updateUpdateMenuItems() {
         checkForUpdatesMenuItem.title = pendingUpdateVersion.map { "有新版本 \($0)…" } ?? "检查更新…"
+        let updater = updaterController.updater
+        // `allowsAutomaticUpdates` is false when the option cannot be turned on at all; a dead
+        // toggle would only confuse, so the item disappears instead.
+        automaticUpdateMenuItem.isHidden = !updater.allowsAutomaticUpdates
+        automaticUpdateMenuItem.state = updater.automaticallyDownloadsUpdates ? .on : .off
+    }
+
+    /// Invokes Sparkle's silent install only while the status menu is off screen, so the app
+    /// never relaunches out from under an open menu.
+    private func installPendingUpdateIfIdle() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.installPendingUpdateIfIdle() }
+            return
+        }
+        guard !menuIsOpen, let install = pendingImmediateInstall else { return }
+        pendingImmediateInstall = nil
+        setPendingUpdateVersion(nil)
+        install()
     }
 
     private func ensureConfigurationExists() throws {
@@ -694,6 +730,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         SMAppService.openSystemSettingsLoginItems()
     }
 
+    @objc private func toggleAutomaticUpdates() {
+        updaterController.updater.automaticallyDownloadsUpdates.toggle()
+        updateUpdateMenuItems()
+    }
+
     @objc private func quitMenuBar() {
         NSApp.terminate(nil)
     }
@@ -701,8 +742,27 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     fileprivate func setPendingUpdateVersion(_ version: String?) {
         guard pendingUpdateVersion != version else { return }
         pendingUpdateVersion = version
-        updateCheckForUpdatesMenuItem()
+        updateUpdateMenuItems()
         updateStatusButton()
+    }
+}
+
+/// Sparkle would otherwise sit on an automatically downloaded update until the app quits, which
+/// a menu bar app rarely does. Taking over the install lets it run and relaunch on its own.
+extension AppDelegate: SPUUpdaterDelegate {
+    func updater(
+        _ updater: SPUUpdater,
+        willInstallUpdateOnQuit item: SUAppcastItem,
+        immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+    ) -> Bool {
+        let version = item.displayVersionString
+        pendingImmediateInstall = {
+            let message = "LidAwake: 正在安装更新 \(version) 并重新启动\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            immediateInstallHandler()
+        }
+        installPendingUpdateIfIdle()
+        return true
     }
 }
 

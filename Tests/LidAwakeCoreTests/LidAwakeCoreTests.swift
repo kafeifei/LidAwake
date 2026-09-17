@@ -65,6 +65,111 @@ final class LidAwakeCoreTests: XCTestCase {
         XCTAssertFalse(LidAwakePolicy.shouldDisableSleep(for: .unknown))
     }
 
+    func testBatteryAwakeSessionLifetime() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertFalse(
+            LidAwakePolicy.batteryAwakeSessionIsActive(
+                until: nil,
+                batteryPercent: 80,
+                minimumPercent: 20,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.batteryAwakeSessionIsActive(
+                until: now.addingTimeInterval(-1),
+                batteryPercent: 80,
+                minimumPercent: 20,
+                now: now
+            )
+        )
+        XCTAssertTrue(
+            LidAwakePolicy.batteryAwakeSessionIsActive(
+                until: now.addingTimeInterval(600),
+                batteryPercent: 80,
+                minimumPercent: 20,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.batteryAwakeSessionIsActive(
+                until: now.addingTimeInterval(600),
+                batteryPercent: 20,
+                minimumPercent: 20,
+                now: now
+            )
+        )
+        XCTAssertTrue(
+            LidAwakePolicy.batteryAwakeSessionIsActive(
+                until: now.addingTimeInterval(600),
+                batteryPercent: nil,
+                minimumPercent: 20,
+                now: now
+            )
+        )
+    }
+
+    func testActiveBatterySessionDisablesSleepExceptOnUnknownPower() {
+        XCTAssertTrue(
+            LidAwakePolicy.shouldDisableSleep(
+                for: .battery,
+                policyEnabled: true,
+                batteryAwakeSessionActive: true
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.shouldDisableSleep(
+                for: .unknown,
+                policyEnabled: true,
+                batteryAwakeSessionActive: true
+            )
+        )
+        XCTAssertTrue(
+            LidAwakePolicy.shouldDisableSleep(
+                for: .ac,
+                policyEnabled: false,
+                batteryAwakeSessionActive: true
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.shouldDisableSleep(
+                for: .battery,
+                policyEnabled: true,
+                batteryAwakeSessionActive: false
+            )
+        )
+    }
+
+    func testDecodesLegacyConfigurationWithoutBatterySessionFields() throws {
+        let configuration = try JSONDecoder().decode(
+            LidAwakeConfiguration.self,
+            from: Data(#"{"enabled":true}"#.utf8)
+        )
+        XCTAssertTrue(configuration.enabled)
+        XCTAssertNil(configuration.batteryAwakeUntil)
+        XCTAssertEqual(configuration.batteryAwakeMinimumPercent, 20)
+    }
+
+    func testConfigurationRoundTripPreservesBatteryAwakeUntil() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let until = Date(timeIntervalSince1970: 1_700_000_000)
+        let data = try encoder.encode(
+            LidAwakeConfiguration(enabled: true, batteryAwakeUntil: until)
+        )
+        let decoded = try decoder.decode(LidAwakeConfiguration.self, from: data)
+        let decodedUntil = try XCTUnwrap(decoded.batteryAwakeUntil)
+        XCTAssertEqual(
+            decodedUntil.timeIntervalSince1970,
+            until.timeIntervalSince1970,
+            accuracy: 1
+        )
+        XCTAssertEqual(decoded.batteryAwakeMinimumPercent, 20)
+    }
+
     func testParsesSleepDisabledFromPMSetOutput() {
         XCTAssertEqual(
             LidAwakePolicy.parseSleepDisabled(fromPMSetOutput: "System-wide power settings:\n SleepDisabled\t\t1\n"),

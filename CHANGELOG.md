@@ -2,6 +2,12 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## 0.2.0 - 2026-09-17
+
+- Add a time-boxed "keep awake with the lid closed on battery" session (30 minutes, 1 hour, or 2 hours) from the menu bar.
+- End the battery session automatically on expiry, when the charge drops to 20%, or when stopped by hand; a session stopped by low battery does not resume after recharging.
+- Bump the helper to version 5, so the app reinstalls the system helper on first launch.
+
 ## 0.1.0 - 2026-08-06
 
 - Initial public release.

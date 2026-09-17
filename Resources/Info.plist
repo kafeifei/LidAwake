@@ -17,7 +17,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.2.1</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -28,5 +28,13 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 LidAwake contributors</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/kafeifei/LidAwake/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>IoP5n0B6m73W36MUnjtBAzqAkokFfLMIsapKUd0KXcU=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

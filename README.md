@@ -15,6 +15,7 @@ LidAwake 是一个原生 macOS 菜单栏工具：接通电源时保持 Mac 合�
 - 在支持的系统上直接读写 macOS 原生 80%–100% 充电上限。
 - 提供“插电时合盖保持运行”开关；关闭后仅保留电池显示。
 - 提供“电池下也保持运行”限时会话（30 分钟 / 1 小时 / 2 小时），到期、电量低于 20% 或手动停止后自动结束。
+- 通过 Sparkle 提供应用内自动更新：默认每天检查一次，也可从菜单“检查更新…”手动触发。
 
 ## 系统要求
 
@@ -41,6 +42,8 @@ LidAwake 是一个原生 macOS 菜单栏工具：接通电源时保持 Mac 合�
 | 电池会话生效（到期/低于 20% 自动结束） | `1` | 保持运行 |
 | 开关关闭 | `0` | 正常睡眠 |
 | 无法判断电源 | `0` | 安全回退 |
+
+睡眠被禁用期间合上盖子时，若没有外接显示器，菜单栏应用会立即让内建显示器进入睡眠（`pmset displaysleepnow`），避免合盖后屏幕持续点亮直到显示器睡眠计时器到期；退出菜单栏应用后此行为不再生效。
 
 > [!WARNING]
 > 电池供电时合盖运行会让机器散热受阻、温度升高，并快速消耗电量。因此“电池下也保持运行”只提供限时会话，不提供常开模式：会话到期、电量降到 20% 或手动停止后立即恢复正常睡眠，且低电量结束的会话不会因为重新充电而自动恢复。
@@ -70,6 +73,8 @@ LidAwake 是一个原生 macOS 菜单栏工具：接通电源时保持 Mac 合�
 3. 按提示授权安装后台服务。
 
 应用会为当前用户注册登录时启动；root 后台服务安装完成后会在系统启动阶段运行，不需要用户进入桌面。后续若移动应用，请先卸载再从新位置安装，避免登录项仍指向旧路径。
+
+应用内更新由 Sparkle 完成：更新下载安装后会自动重启应用。如果某次发布同时提升了后台服务版本，更新后的第一次启动会再请求一次管理员授权，用于重新安装 `LidAwakeHelper`；之后的启动不再提示。
 
 ## 从源码安装
 
@@ -129,11 +134,11 @@ LIDAWAKE_NOTARY_PROFILE='LidAwake-notary' \
 ./Scripts/release.sh
 ```
 
-发布脚本会生成 arm64 + x86_64 Universal Binary，签名所有可执行文件，提交公证、装订 ticket、通过 Gatekeeper 检查，并在 `dist/` 生成 ZIP 和 SHA-256 文件。Apple 的要求见 [Distributing software on macOS](https://developer.apple.com/macos/distribution/) 和 [Notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
+发布脚本会生成 arm64 + x86_64 Universal Binary，签名所有可执行文件，提交公证、装订 ticket、通过 Gatekeeper 检查，并在 `dist/` 生成 ZIP 和 SHA-256 文件。它还会调用 Sparkle 的 `generate_appcast`（EdDSA 私钥从登录钥匙串读取）生成 `dist/appcast.xml`；该文件必须和 ZIP 一起上传到同一个 GitHub Release，因为应用的更新源地址指向最新 Release 的 `appcast.xml` 资源。Apple 的要求见 [Distributing software on macOS](https://developer.apple.com/macos/distribution/) 和 [Notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
 
 ## 隐私与网络
 
-LidAwake 不包含网络请求、遥测、分析、更新检查或用户账号。所有状态都保存在本机。
+LidAwake 唯一的网络访问是 Sparkle 的更新检查：向 GitHub Releases 上托管的 appcast 拉取版本信息，默认每天一次，可以在 Sparkle 首次弹出的提示中选择不自动检查，也可以只用菜单中的“检查更新…”手动触发。除此之外没有遥测、分析或用户账号，所有状态都保存在本机。
 
 ## 许可证
 

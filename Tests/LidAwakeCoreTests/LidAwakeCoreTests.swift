@@ -182,6 +182,44 @@ final class LidAwakeCoreTests: XCTestCase {
         XCTAssertNil(LidAwakePolicy.parseSleepDisabled(fromPMSetOutput: "Currently in use:\n sleep 1\n"))
     }
 
+    func testSleepsDisplayOnlyOnClosedLidWithSleepDisabledAndNoExternalDisplay() {
+        XCTAssertTrue(
+            LidAwakePolicy.shouldSleepDisplayOnLidClose(
+                clamshellClosed: true,
+                sleepDisabled: true,
+                hasExternalDisplay: false
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.shouldSleepDisplayOnLidClose(
+                clamshellClosed: false,
+                sleepDisabled: true,
+                hasExternalDisplay: false
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.shouldSleepDisplayOnLidClose(
+                clamshellClosed: true,
+                sleepDisabled: nil,
+                hasExternalDisplay: false
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.shouldSleepDisplayOnLidClose(
+                clamshellClosed: true,
+                sleepDisabled: false,
+                hasExternalDisplay: false
+            )
+        )
+        XCTAssertFalse(
+            LidAwakePolicy.shouldSleepDisplayOnLidClose(
+                clamshellClosed: true,
+                sleepDisabled: true,
+                hasExternalDisplay: true
+            )
+        )
+    }
+
     func testBatteryPowerSignAndFlow() {
         XCTAssertEqual(
             LidAwakePolicy.batteryWatts(voltageMillivolts: 12_000, currentMilliamps: 1_000),

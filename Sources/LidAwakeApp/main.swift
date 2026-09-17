@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import LidAwakeCore
 import ServiceManagement
+import Sparkle
 
 private enum AppConstants {
     static let helperVersion = LidAwakeProtocol.helperVersion
@@ -235,6 +236,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var chargeLimit: Int?
     private var menuState = MenuState.starting("正在确认状态…")
     private var batteryAwakeSubmenuShowsStop = false
+    private let clamshellMonitor = ClamshellMonitor()
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
+    private var latestStatus: HelperStatus?
+    private var lidCloseCheckIsScheduled = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -260,6 +269,55 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         )
         RunLoop.main.add(refreshTimer, forMode: .common)
         timer = refreshTimer
+
+        clamshellMonitor.onLidClosed = { [weak self] in
+            self?.scheduleLidCloseDisplaySleep()
+        }
+        clamshellMonitor.start()
+    }
+
+    /// The helper may still be reacting to the lid event, so the decision waits a second and
+    /// then re-checks every input. One lid close schedules at most one check.
+    private func scheduleLidCloseDisplaySleep() {
+        guard !lidCloseCheckIsScheduled else { return }
+        lidCloseCheckIsScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            self.lidCloseCheckIsScheduled = false
+            self.sleepDisplayIfLidIsStillClosed()
+        }
+    }
+
+    private func sleepDisplayIfLidIsStillClosed() {
+        refreshStatus()
+        guard LidAwakePolicy.shouldSleepDisplayOnLidClose(
+            clamshellClosed: clamshellMonitor.readClamshellClosed() == true,
+            sleepDisabled: currentSleepDisabled,
+            hasExternalDisplay: ClamshellMonitor.hasExternalDisplay()
+        ) else {
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+            process.arguments = ["displaysleepnow"]
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                let message = "LidAwake: 无法让显示器睡眠：\(error.localizedDescription)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+        }
+    }
+
+    /// A stale status says nothing about the current `SleepDisabled`.
+    private var currentSleepDisabled: Bool? {
+        guard let latestStatus, Date().timeIntervalSince(latestStatus.updatedAt) <= 25 else {
+            return nil
+        }
+        return latestStatus.sleepDisabled
     }
 
     private func configureMenu() {
@@ -301,6 +359,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         loginItemMenuItem.action = #selector(openLoginItemsSettings)
         loginItemMenuItem.isHidden = true
         menu.addItem(loginItemMenuItem)
+        menu.addItem(.separator())
+
+        let checkForUpdatesItem = NSMenuItem(
+            title: "检查更新…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkForUpdatesItem.target = updaterController
+        menu.addItem(checkForUpdatesItem)
         menu.addItem(.separator())
 
         let batterySettingsItem = NSMenuItem(
@@ -385,6 +452,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
 
         guard let data = FileManager.default.contents(atPath: AppConstants.statusPath) else {
+            latestStatus = nil
             setState(.starting("正在等待后台服务…"))
             return
         }
@@ -392,9 +460,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let status = try? decoder.decode(HelperStatus.self, from: data) else {
+            latestStatus = nil
             setState(.error("状态文件异常"))
             return
         }
+
+        latestStatus = status
 
         if Date().timeIntervalSince(status.updatedAt) > 25 {
             setState(.error("后台服务无响应"))

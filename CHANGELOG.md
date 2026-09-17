@@ -2,8 +2,9 @@
 
 All notable changes to LidAwake are documented in this file.
 
-## Unreleased
+## 0.2.2 - 2026-09-17
 
+- Scheduled Sparkle update checks no longer interrupt with a window: a new version now shows up as a red dot on the menu bar battery icon and a “有新版本 X.Y.Z…” menu item that opens Sparkle's usual update dialog when clicked; the dot clears once the update has been seen or the update session ends. Manual “检查更新…” is unchanged.
 - `Scripts/release.sh` now signs only the archive built by the current run into `dist/appcast.xml`, by generating the appcast from a staging directory instead of scanning all of `dist/`; older archives left in `dist/` no longer add bogus appcast items or binary deltas.
 
 ## 0.2.1 - 2026-09-17

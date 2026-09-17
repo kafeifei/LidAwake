@@ -51,19 +51,29 @@ LIDAWAKE_ARCHS="arm64 x86_64" "$project_dir/Scripts/build-app.sh" release
 /bin/rm -f "$archive_path"
 /usr/bin/ditto -c -k --keepParent "$project_dir/.build/LidAwake.app" "$archive_path"
 /usr/sbin/spctl --assess --type execute --verbose=4 "$project_dir/.build/LidAwake.app"
-/usr/bin/shasum -a 256 "$archive_path" > "$archive_path.sha256"
+(cd "$output_directory" && /usr/bin/shasum -a 256 "$(basename "$archive_path")" > "$archive_path.sha256")
 
 appcast_path="$output_directory/appcast.xml"
+# generate_appcast signs every archive it finds, so scan a staging directory holding only
+# this run's archive; older releases left in dist/ would otherwise add bogus appcast items
+# and binary deltas.
+staging_directory="$output_directory/appcast-staging"
+case "$staging_directory" in
+    "$project_dir"/dist/appcast-staging) ;;
+    *) print -u2 "Unexpected staging directory: $staging_directory"; exit 1 ;;
+esac
+/bin/rm -rf "$staging_directory"
+/bin/mkdir -p "$staging_directory"
+/bin/ln "$archive_path" "$staging_directory/" 2>/dev/null || /bin/cp "$archive_path" "$staging_directory/"
+# An appcast left by an earlier run would otherwise keep contributing its stale items.
+/bin/rm -f "$appcast_path"
 # The EdDSA private key comes from the login keychain.
 "$generate_appcast" \
     --download-url-prefix "https://github.com/kafeifei/LidAwake/releases/download/v$version/" \
     --link "https://github.com/kafeifei/LidAwake/releases" \
     -o "$appcast_path" \
-    "$output_directory"
-# generate_appcast leaves binary deltas and an extraction cache behind; only the zip, its
-# checksum and the appcast are uploaded to the release.
-/bin/rm -f "$output_directory"/*.delta(N)
-/bin/rm -rf "$output_directory/.tmp"
+    "$staging_directory"
+/bin/rm -rf "$staging_directory"
 
 print "$archive_path"
 print "$appcast_path"

@@ -2,6 +2,10 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## Unreleased
+
+- `Scripts/release.sh` now signs only the archive built by the current run into `dist/appcast.xml`, by generating the appcast from a staging directory instead of scanning all of `dist/`; older archives left in `dist/` no longer add bogus appcast items or binary deltas.
+
 ## 0.2.1 - 2026-09-17
 
 - Ship in-app updates through Sparkle 2.10: the app checks a GitHub Releases appcast once a day and offers a manual "检查更新…" menu item.

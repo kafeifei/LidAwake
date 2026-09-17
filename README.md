@@ -134,7 +134,7 @@ LIDAWAKE_NOTARY_PROFILE='LidAwake-notary' \
 ./Scripts/release.sh
 ```
 
-发布脚本会生成 arm64 + x86_64 Universal Binary，签名所有可执行文件，提交公证、装订 ticket、通过 Gatekeeper 检查，并在 `dist/` 生成 ZIP 和 SHA-256 文件。它还会调用 Sparkle 的 `generate_appcast`（EdDSA 私钥从登录钥匙串读取）生成 `dist/appcast.xml`；该文件必须和 ZIP 一起上传到同一个 GitHub Release，因为应用的更新源地址指向最新 Release 的 `appcast.xml` 资源。Apple 的要求见 [Distributing software on macOS](https://developer.apple.com/macos/distribution/) 和 [Notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
+发布脚本会生成 arm64 + x86_64 Universal Binary，签名所有可执行文件，提交公证、装订 ticket、通过 Gatekeeper 检查，并在 `dist/` 生成 ZIP 和 SHA-256 文件（SHA-256 文件中记录的是 ZIP 的文件名，不含目录）。它还会调用 Sparkle 的 `generate_appcast`（EdDSA 私钥从登录钥匙串读取）生成 `dist/appcast.xml`；扫描的是只包含本次归档的临时目录，因此 `dist/` 中遗留的旧版本 ZIP 不会混进 appcast。该文件必须和 ZIP 一起上传到同一个 GitHub Release，因为应用的更新源地址指向最新 Release 的 `appcast.xml` 资源。Apple 的要求见 [Distributing software on macOS](https://developer.apple.com/macos/distribution/) 和 [Notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
 
 ## 隐私与网络
 

@@ -89,10 +89,18 @@ private final class PowerMonitor {
     private let configurationPath: String
     private let runner = CommandRunner()
     private let statusWriter = StatusWriter()
+    private let configurationDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
     private var notificationSource: CFRunLoopSource?
     private var timer: Timer?
     private var terminationSources: [DispatchSourceSignal] = []
     private var isReconciling = false
+    /// Expiry of a session that already ended on low battery. Recharging above the
+    /// threshold must not resurrect it; only a newly configured expiry starts a session.
+    private var lowBatteryStoppedUntil: Date?
 
     init(configurationPath: String) {
         self.configurationPath = configurationPath
@@ -198,15 +206,41 @@ private final class PowerMonitor {
         isReconciling = true
         defer { isReconciling = false }
 
+        let now = Date()
         let powerSource = readPowerSource()
         let telemetry = readPowerTelemetry(powerSource: powerSource)
         let configuration = readConfiguration()
+        let batteryPercent = readBatteryPercent()
+
+        if lowBatteryStoppedUntil != configuration.batteryAwakeUntil {
+            lowBatteryStoppedUntil = nil
+        }
+
+        let sessionActive = lowBatteryStoppedUntil == nil && LidAwakePolicy.batteryAwakeSessionIsActive(
+            until: configuration.batteryAwakeUntil,
+            batteryPercent: batteryPercent,
+            minimumPercent: configuration.batteryAwakeMinimumPercent,
+            now: now
+        )
+
+        var stopReason: BatteryAwakeStopReason?
+        if let until = configuration.batteryAwakeUntil, !sessionActive {
+            stopReason = until <= now ? .expired : .lowBattery
+            if stopReason == .lowBattery {
+                lowBatteryStoppedUntil = until
+            }
+        }
+
         let desiredSleepDisabled = LidAwakePolicy.shouldDisableSleep(
             for: powerSource,
-            policyEnabled: configuration.enabled
+            policyEnabled: configuration.enabled,
+            batteryAwakeSessionActive: sessionActive
         )
         var currentSleepDisabled = readSleepDisabled()
         var detail: String?
+        if stopReason == .lowBattery {
+            detail = "battery awake stopped: low battery"
+        }
 
         if currentSleepDisabled != desiredSleepDisabled {
             let result = setSleepDisabled(desiredSleepDisabled)
@@ -241,6 +275,8 @@ private final class PowerMonitor {
             adapterWatts: telemetry.adapterWatts,
             batteryWatts: telemetry.batteryWatts,
             batteryFlow: telemetry.batteryFlow,
+            batteryAwakeUntil: sessionActive ? configuration.batteryAwakeUntil : nil,
+            batteryAwakeStopReason: stopReason,
             updatedAt: Date(),
             trigger: trigger,
             detail: detail
@@ -263,6 +299,27 @@ private final class PowerMonitor {
         return .unknown
     }
 
+    private func readBatteryPercent() -> Int? {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef] else {
+            return nil
+        }
+
+        for source in sources {
+            guard let description = IOPSGetPowerSourceDescription(snapshot, source)?
+                .takeUnretainedValue() as? [String: Any],
+                  (description[kIOPSTypeKey as String] as? String) == (kIOPSInternalBatteryType as String),
+                  let current = (description[kIOPSCurrentCapacityKey as String] as? NSNumber)?.doubleValue,
+                  let maximum = (description[kIOPSMaxCapacityKey as String] as? NSNumber)?.doubleValue,
+                  maximum > 0 else {
+                continue
+            }
+            return min(max(Int((current / maximum * 100).rounded()), 0), 100)
+        }
+
+        return nil
+    }
+
     private func readSleepDisabled() -> Bool? {
         let result = runner.run(HelperConstants.pmsetPath, arguments: ["-g"])
         guard result.exitCode == 0 else { return nil }
@@ -271,7 +328,10 @@ private final class PowerMonitor {
 
     private func readConfiguration() -> LidAwakeConfiguration {
         guard let data = FileManager.default.contents(atPath: configurationPath),
-              let configuration = try? JSONDecoder().decode(LidAwakeConfiguration.self, from: data) else {
+              let configuration = try? configurationDecoder.decode(
+                  LidAwakeConfiguration.self,
+                  from: data
+              ) else {
             return LidAwakeConfiguration(enabled: false)
         }
         return configuration

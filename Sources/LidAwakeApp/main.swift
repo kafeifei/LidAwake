@@ -57,6 +57,7 @@ private enum LoginItemRegistration {
 private enum MenuState {
     case starting(String)
     case awake
+    case batteryAwake(minutesLeft: Int)
     case normal
     case disabled
     case error(String)
@@ -65,6 +66,7 @@ private enum MenuState {
         switch self {
         case .starting(let message): return message
         case .awake: return "保持清醒"
+        case .batteryAwake(let minutesLeft): return "电池保持运行 · 剩余 \(minutesLeft) 分钟"
         case .normal, .disabled: return "正常睡眠"
         case .error(let message): return message
         }
@@ -72,11 +74,29 @@ private enum MenuState {
 
     var indicatorColor: NSColor {
         switch self {
-        case .awake: return .systemGreen
+        case .awake, .batteryAwake: return .systemGreen
         case .normal, .disabled: return .secondaryLabelColor
         case .starting: return .systemYellow
         case .error: return .systemRed
         }
+    }
+}
+
+private enum BatteryAwakeDuration: Int, CaseIterable {
+    case thirtyMinutes = 30
+    case oneHour = 60
+    case twoHours = 120
+
+    var title: String {
+        switch self {
+        case .thirtyMinutes: return "30 分钟"
+        case .oneHour: return "1 小时"
+        case .twoHours: return "2 小时"
+        }
+    }
+
+    var seconds: TimeInterval {
+        TimeInterval(rawValue) * 60
     }
 }
 
@@ -197,6 +217,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private let summaryView = BatterySummaryView()
     private let statusMenuItem = NSMenuItem(title: "当前：正在确认…", action: nil, keyEquivalent: "")
     private let enabledMenuItem = NSMenuItem(title: "插电时合盖保持运行", action: nil, keyEquivalent: "")
+    private let batteryAwakeMenuItem = NSMenuItem(title: "电池下也保持运行", action: nil, keyEquivalent: "")
     private let loginItemMenuItem = NSMenuItem(
         title: "允许登录时启动…",
         action: nil,
@@ -213,6 +234,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var batterySnapshot: BatterySnapshot?
     private var chargeLimit: Int?
     private var menuState = MenuState.starting("正在确认状态…")
+    private var batteryAwakeSubmenuShowsStop = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -268,6 +290,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         enabledMenuItem.target = self
         enabledMenuItem.action = #selector(togglePolicy)
         menu.addItem(enabledMenuItem)
+        menu.addItem(batteryAwakeMenuItem)
+        updateBatteryAwakeMenuItem(until: nil)
         menu.addItem(statusMenuItem)
         helperRetryMenuItem.target = self
         helperRetryMenuItem.action = #selector(retryHelperInstallation)
@@ -378,13 +402,23 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
 
         enabledMenuItem.state = status.policyEnabled ? .on : .off
+        updateBatteryAwakeMenuItem(until: status.batteryAwakeUntil)
 
-        if !status.policyEnabled {
+        let sessionIsActive = status.batteryAwakeUntil != nil
+        statusMenuItem.toolTip = status.batteryAwakeStopReason == .lowBattery && status.mode == .normal
+            ? "电量低于阈值，已停止电池保持运行"
+            : nil
+
+        if !status.policyEnabled && !sessionIsActive {
             setState(.disabled)
         } else {
             switch status.mode {
         case .awake:
-            setState(.awake)
+            if status.powerSource == .battery, let until = status.batteryAwakeUntil {
+                setState(.batteryAwake(minutesLeft: remainingMinutes(until: until)))
+            } else {
+                setState(.awake)
+            }
         case .normal:
             setState(.normal)
         case .starting:
@@ -446,7 +480,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         guard let data = FileManager.default.contents(atPath: LidAwakePaths.configurationPath) else {
             return nil
         }
-        return try? JSONDecoder().decode(LidAwakeConfiguration.self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(LidAwakeConfiguration.self, from: data)
     }
 
     private func writeConfiguration(_ configuration: LidAwakeConfiguration) throws {
@@ -455,25 +491,101 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let data = try JSONEncoder().encode(configuration)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(configuration)
         try data.write(to: url, options: .atomic)
     }
 
+    private func notifyConfigurationChanged() {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(LidAwakePaths.configurationChangedNotification as CFString),
+            nil,
+            nil,
+            true
+        )
+    }
+
     @objc private func togglePolicy() {
-        let current = readConfiguration() ?? LidAwakeConfiguration(enabled: true)
+        var configuration = readConfiguration() ?? LidAwakeConfiguration(enabled: true)
+        configuration.enabled.toggle()
         do {
-            try writeConfiguration(LidAwakeConfiguration(enabled: !current.enabled))
-            enabledMenuItem.state = current.enabled ? .off : .on
-            CFNotificationCenterPostNotification(
-                CFNotificationCenterGetDarwinNotifyCenter(),
-                CFNotificationName(LidAwakePaths.configurationChangedNotification as CFString),
-                nil,
-                nil,
-                true
-            )
+            try writeConfiguration(configuration)
+            enabledMenuItem.state = configuration.enabled ? .on : .off
+            notifyConfigurationChanged()
         } catch {
             setState(.error("无法保存开关状态"))
         }
+    }
+
+    @objc private func startBatteryAwakeSession(_ sender: NSMenuItem) {
+        guard let duration = BatteryAwakeDuration(rawValue: sender.tag) else { return }
+        writeBatteryAwakeUntil(Date().addingTimeInterval(duration.seconds))
+    }
+
+    @objc private func stopBatteryAwakeSession() {
+        writeBatteryAwakeUntil(nil)
+    }
+
+    private func writeBatteryAwakeUntil(_ until: Date?) {
+        var configuration = readConfiguration() ?? LidAwakeConfiguration(enabled: true)
+        configuration.batteryAwakeUntil = until
+        do {
+            try writeConfiguration(configuration)
+            updateBatteryAwakeMenuItem(until: until)
+            notifyConfigurationChanged()
+        } catch {
+            setState(.error("无法保存电池会话"))
+        }
+    }
+
+    /// Rebuilds the submenu so the running session offers 停止 and a restart of each duration.
+    /// The submenu itself only changes when the session starts or stops; the title refreshes every tick.
+    private func updateBatteryAwakeMenuItem(until: Date?) {
+        let sessionIsActive = until != nil
+        if batteryAwakeMenuItem.submenu == nil || sessionIsActive != batteryAwakeSubmenuShowsStop {
+            let submenu = NSMenu()
+            if sessionIsActive {
+                let stopItem = NSMenuItem(
+                    title: "停止",
+                    action: #selector(stopBatteryAwakeSession),
+                    keyEquivalent: ""
+                )
+                stopItem.target = self
+                submenu.addItem(stopItem)
+                submenu.addItem(.separator())
+            }
+            for duration in BatteryAwakeDuration.allCases {
+                let item = NSMenuItem(
+                    title: duration.title,
+                    action: #selector(startBatteryAwakeSession(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.tag = duration.rawValue
+                submenu.addItem(item)
+            }
+            batteryAwakeMenuItem.submenu = submenu
+            batteryAwakeSubmenuShowsStop = sessionIsActive
+        }
+
+        if let until {
+            batteryAwakeMenuItem.title = "电池下保持运行 · " + remainingText(until: until)
+            batteryAwakeMenuItem.state = .on
+        } else {
+            batteryAwakeMenuItem.title = "电池下也保持运行"
+            batteryAwakeMenuItem.state = .off
+        }
+    }
+
+    private func remainingMinutes(until: Date) -> Int {
+        Int((until.timeIntervalSinceNow / 60).rounded(.up))
+    }
+
+    private func remainingText(until: Date) -> String {
+        let minutes = remainingMinutes(until: until)
+        return minutes < 1 ? "剩余不足 1 分钟" : "剩余 \(minutes) 分钟"
     }
 
     @objc private func statusTimerFired() {

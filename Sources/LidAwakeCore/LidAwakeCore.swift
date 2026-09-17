@@ -1,7 +1,7 @@
 import Foundation
 
 public enum LidAwakeProtocol {
-    public static let helperVersion = 4
+    public static let helperVersion = 5
     public static let helperLabel = "com.kafeifei.LidAwake.helper"
 }
 
@@ -81,10 +81,35 @@ public enum HelperPlistRenderer {
 
 public struct LidAwakeConfiguration: Codable, Sendable {
     public var enabled: Bool
+    /// Expiry of the time-boxed "keep awake on battery" session; nil when no session was started.
+    public var batteryAwakeUntil: Date?
+    /// The battery session ends as soon as the charge drops to this percentage.
+    public var batteryAwakeMinimumPercent: Int
 
-    public init(enabled: Bool = true) {
+    public init(
+        enabled: Bool = true,
+        batteryAwakeUntil: Date? = nil,
+        batteryAwakeMinimumPercent: Int = 20
+    ) {
         self.enabled = enabled
+        self.batteryAwakeUntil = batteryAwakeUntil
+        self.batteryAwakeMinimumPercent = batteryAwakeMinimumPercent
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        batteryAwakeUntil = try container.decodeIfPresent(Date.self, forKey: .batteryAwakeUntil)
+        batteryAwakeMinimumPercent = try container.decodeIfPresent(
+            Int.self,
+            forKey: .batteryAwakeMinimumPercent
+        ) ?? 20
+    }
+}
+
+public enum BatteryAwakeStopReason: String, Codable, Sendable {
+    case expired
+    case lowBattery
 }
 
 public enum BatteryFlow: String, Codable, Sendable {
@@ -103,6 +128,10 @@ public struct HelperStatus: Codable, Sendable {
     public let adapterWatts: Int?
     public let batteryWatts: Double?
     public let batteryFlow: BatteryFlow
+    /// Expiry of the active battery session; nil when no session is running.
+    public let batteryAwakeUntil: Date?
+    /// Why the configured battery session is not running; nil when there is none or it is active.
+    public let batteryAwakeStopReason: BatteryAwakeStopReason?
     public let updatedAt: Date
     public let trigger: String
     public let detail: String?
@@ -116,6 +145,8 @@ public struct HelperStatus: Codable, Sendable {
         adapterWatts: Int? = nil,
         batteryWatts: Double? = nil,
         batteryFlow: BatteryFlow = .unknown,
+        batteryAwakeUntil: Date? = nil,
+        batteryAwakeStopReason: BatteryAwakeStopReason? = nil,
         updatedAt: Date,
         trigger: String,
         detail: String? = nil
@@ -128,6 +159,8 @@ public struct HelperStatus: Codable, Sendable {
         self.adapterWatts = adapterWatts
         self.batteryWatts = batteryWatts
         self.batteryFlow = batteryFlow
+        self.batteryAwakeUntil = batteryAwakeUntil
+        self.batteryAwakeStopReason = batteryAwakeStopReason
         self.updatedAt = updatedAt
         self.trigger = trigger
         self.detail = detail
@@ -139,7 +172,35 @@ public enum LidAwakePolicy {
         for powerSource: DetectedPowerSource,
         policyEnabled: Bool = true
     ) -> Bool {
-        policyEnabled && powerSource == .ac
+        shouldDisableSleep(
+            for: powerSource,
+            policyEnabled: policyEnabled,
+            batteryAwakeSessionActive: false
+        )
+    }
+
+    /// The battery session is independent of `policyEnabled`, which only covers AC power.
+    /// An undetectable power source always restores normal sleep.
+    public static func shouldDisableSleep(
+        for powerSource: DetectedPowerSource,
+        policyEnabled: Bool,
+        batteryAwakeSessionActive: Bool
+    ) -> Bool {
+        (policyEnabled && powerSource == .ac)
+            || (batteryAwakeSessionActive && powerSource != .unknown)
+    }
+
+    /// An unknown battery percentage keeps the session alive; the helper's
+    /// "unknown power source restores sleep" path still guards the dangerous case.
+    public static func batteryAwakeSessionIsActive(
+        until: Date?,
+        batteryPercent: Int?,
+        minimumPercent: Int,
+        now: Date
+    ) -> Bool {
+        guard let until, until > now else { return false }
+        if let batteryPercent, batteryPercent <= minimumPercent { return false }
+        return true
     }
 
     public static func parseSleepDisabled(fromPMSetOutput output: String) -> Bool? {

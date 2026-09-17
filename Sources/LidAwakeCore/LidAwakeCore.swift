@@ -203,6 +203,18 @@ public enum LidAwakePolicy {
         return true
     }
 
+    /// With `SleepDisabled` set, closing the lid no longer sleeps the Mac, so the built-in
+    /// display stays lit until the system display sleep timer fires. Sleeping the display by
+    /// hand is only safe when the lid is the last screen: an external display keeps working.
+    /// An unknown `SleepDisabled` is treated as "do nothing".
+    public static func shouldSleepDisplayOnLidClose(
+        clamshellClosed: Bool,
+        sleepDisabled: Bool?,
+        hasExternalDisplay: Bool
+    ) -> Bool {
+        clamshellClosed && sleepDisabled == true && !hasExternalDisplay
+    }
+
     public static func parseSleepDisabled(fromPMSetOutput output: String) -> Bool? {
         for line in output.split(whereSeparator: \Character.isNewline) {
             let fields = line.split(whereSeparator: \Character.isWhitespace)

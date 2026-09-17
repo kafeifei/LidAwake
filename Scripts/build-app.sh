@@ -4,7 +4,7 @@ set -euo pipefail
 project_dir="${0:A:h:h}"
 configuration="${1:-release}"
 version="$(<"$project_dir/VERSION")"
-build_number="${LIDAWAKE_BUILD_NUMBER:-1}"
+build_number="${LIDAWAKE_BUILD_NUMBER:-$version}"
 sign_identity="${LIDAWAKE_SIGN_IDENTITY:--}"
 typeset -a architecture_arguments
 
@@ -18,7 +18,9 @@ if [[ -n "${LIDAWAKE_ARCHS:-}" ]]; then
 fi
 
 cd "$project_dir"
-/usr/bin/swift build -c "$configuration" "${architecture_arguments[@]}" -Xswiftc -warnings-as-errors --product LidAwakeApp
+/usr/bin/swift build -c "$configuration" "${architecture_arguments[@]}" -Xswiftc -warnings-as-errors \
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+    --product LidAwakeApp
 /usr/bin/swift build -c "$configuration" "${architecture_arguments[@]}" -Xswiftc -warnings-as-errors --product LidAwakeHelper
 
 bin_dir="$(/usr/bin/swift build -c "$configuration" "${architecture_arguments[@]}" --show-bin-path)"
@@ -42,11 +44,48 @@ esac
 /usr/bin/plutil -replace CFBundleShortVersionString -string "$version" "$app_bundle/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleVersion -string "$build_number" "$app_bundle/Contents/Info.plist"
 
+typeset -a sparkle_framework_matches
+sparkle_framework_matches=($project_dir/.build/artifacts/**/Sparkle.xcframework/macos-*/Sparkle.framework(N/))
+if (( ${#sparkle_framework_matches} != 1 )); then
+    print -u2 "Expected exactly one Sparkle.framework under .build/artifacts, found ${#sparkle_framework_matches}."
+    print -u2 "Run 'swift package resolve' and retry."
+    exit 1
+fi
+sparkle_framework="${sparkle_framework_matches[1]}"
+bundled_sparkle_framework="$app_bundle/Contents/Frameworks/Sparkle.framework"
+/bin/mkdir -p "$app_bundle/Contents/Frameworks"
+/usr/bin/ditto "$sparkle_framework" "$bundled_sparkle_framework"
+
+# SwiftPM links the app against the artifact directory. The bundle carries its own copy, so the
+# absolute build-time rpath is removed; it never resolves on another machine.
+typeset -a linked_rpaths
+linked_rpaths=(${(f)"$(/usr/bin/otool -l "$app_bundle/Contents/MacOS/LidAwake" | /usr/bin/awk '/LC_RPATH/ { in_rpath = 1; next } in_rpath && $1 == "path" { print $2; in_rpath = 0 }')"})
+for linked_rpath in "${linked_rpaths[@]}"; do
+    case "$linked_rpath" in
+        "$project_dir"/.build*)
+            /usr/bin/install_name_tool -delete_rpath "$linked_rpath" "$app_bundle/Contents/MacOS/LidAwake" 2>/dev/null || true
+            ;;
+    esac
+done
+
 typeset -a codesign_arguments
 codesign_arguments=(--force --sign "$sign_identity")
 if [[ "$sign_identity" != "-" ]]; then
     codesign_arguments+=(--options runtime --timestamp)
 fi
+# Sparkle's nested helpers are signed from the inside out; --deep is never used.
+typeset -a sparkle_components
+sparkle_components=(
+    "$bundled_sparkle_framework/Versions/B/XPCServices/Installer.xpc"
+    "$bundled_sparkle_framework/Versions/B/XPCServices/Downloader.xpc"
+    "$bundled_sparkle_framework/Versions/B/Autoupdate"
+    "$bundled_sparkle_framework/Versions/B/Updater.app"
+    "$bundled_sparkle_framework"
+)
+for sparkle_component in "${sparkle_components[@]}"; do
+    [[ -e "$sparkle_component" ]] || continue
+    /usr/bin/codesign "${codesign_arguments[@]}" "$sparkle_component"
+done
 /usr/bin/codesign "${codesign_arguments[@]}" "$app_bundle/Contents/Resources/LidAwakeHelper"
 /usr/bin/codesign "${codesign_arguments[@]}" "$app_bundle"
 

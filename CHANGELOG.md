@@ -2,6 +2,11 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## 0.2.1 - 2026-09-17
+
+- Ship in-app updates through Sparkle 2.10: the app checks a GitHub Releases appcast once a day and offers a manual "检查更新…" menu item.
+- Sleep the built-in display immediately (`pmset displaysleepnow`) when the lid closes while sleep is disabled and no external display is attached, instead of leaving the screen lit until the display sleep timer fires; the behavior needs the menu bar app to be running.
+
 ## 0.2.0 - 2026-09-17
 
 - Add a time-boxed "keep awake with the lid closed on battery" session (30 minutes, 1 hour, or 2 hours) from the menu bar.

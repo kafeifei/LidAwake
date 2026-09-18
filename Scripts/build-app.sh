@@ -44,6 +44,18 @@ esac
 /usr/bin/plutil -replace CFBundleShortVersionString -string "$version" "$app_bundle/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleVersion -string "$build_number" "$app_bundle/Contents/Info.plist"
 
+# Generate all standard and Retina icon sizes from the approved transparent master.
+iconset_dir="$project_dir/.build/AppIcon.iconset"
+/bin/mkdir -p "$iconset_dir"
+for icon_size in 16 32 128 256 512; do
+    /usr/bin/sips -z "$icon_size" "$icon_size" "$project_dir/Resources/AppIcon.png" \
+        --out "$iconset_dir/icon_${icon_size}x${icon_size}.png" >/dev/null
+    retina_size=$((icon_size * 2))
+    /usr/bin/sips -z "$retina_size" "$retina_size" "$project_dir/Resources/AppIcon.png" \
+        --out "$iconset_dir/icon_${icon_size}x${icon_size}@2x.png" >/dev/null
+done
+/usr/bin/iconutil -c icns "$iconset_dir" --output "$app_bundle/Contents/Resources/AppIcon.icns"
+
 typeset -a sparkle_framework_matches
 sparkle_framework_matches=($project_dir/.build/artifacts/**/Sparkle.xcframework/macos-*/Sparkle.framework(N/))
 if (( ${#sparkle_framework_matches} != 1 )); then

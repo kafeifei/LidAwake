@@ -8,6 +8,8 @@
     <string>合盖守护</string>
     <key>CFBundleExecutable</key>
     <string>LidAwake</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>CFBundleIdentifier</key>
     <string>com.kafeifei.LidAwake</string>
     <key>CFBundleInfoDictionaryVersion</key>

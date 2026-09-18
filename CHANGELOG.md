@@ -2,6 +2,13 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## 0.2.4 - 2026-09-18
+
+- A published LidAwake now has to live at `/Applications/LidAwake.app`: the login item and the system helper are both registered against the app's own path, so running from anywhere else would leave them pointing at a stale location.
+- The app checks its own location at launch and, when it is somewhere else, offers to move itself to `/Applications` and reopen from there (asking for administrator authorization only when `/Applications` is not writable). Builds running out of `.build` are left alone so debugging still works.
+- Add a “卸载 LidAwake…” menu item that runs the bundled uninstall script after a confirmation, so end users can remove the app, the background service, the login item and the configuration without the Terminal. The privileged step now also deletes the app bundle itself when the current user cannot.
+- `Scripts/install-app.sh` and `Scripts/uninstall.sh` default to `/Applications/LidAwake.app` instead of `~/Applications/LidAwake.app`; the installer fails with a clear message when `/Applications` is not writable instead of silently escalating.
+
 ## 0.2.3 - 2026-09-17
 
 - Background update checks now download, install and relaunch on their own: `SUAutomaticallyUpdate` is on by default and the app takes over Sparkle's install-on-quit handler, running it as soon as the status menu is closed instead of waiting for a quit that a menu bar app rarely sees. The red dot and “有新版本 X.Y.Z…” item remain as the fallback when automatic install is off or not allowed, and a new “自动安装更新” menu item toggles it.

@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_directory="${0:A:h}"
 user_home="${HOME:A}"
-destination_app="$user_home/Applications/LidAwake.app"
+destination_app="/Applications/LidAwake.app"
 bundled_app="${script_directory:h:h}"
 launch_agent_plist="$user_home/Library/LaunchAgents/com.kafeifei.LidAwake.menu.plist"
 launch_agent_label="com.kafeifei.LidAwake.menu"
@@ -30,13 +30,8 @@ if [[ -x "$app_executable" ]]; then
         print -u2 "警告：无法取消系统登录项，将继续卸载其余组件。"
 fi
 
-/usr/bin/osascript "$script_directory/uninstall-privileged.applescript"
-
-/bin/launchctl bootout "$user_domain/$launch_agent_label" >/dev/null 2>&1 || true
-/bin/rm -f "$launch_agent_plist"
-/bin/rm -f "$configuration_file"
-/bin/rmdir "$configuration_directory" >/dev/null 2>&1 || true
-
+# 菜单里的“卸载 LidAwake…”会在应用仍在运行时启动本脚本，所以先让它退出，
+# 之后的删除不再依赖应用存活。
 if [[ -d "$destination_app" ]]; then
     for process_pid in ${(@f)"$(/usr/bin/pgrep -x LidAwake 2>/dev/null || true)"}; do
         [[ -n "$process_pid" ]] || continue
@@ -45,6 +40,24 @@ if [[ -d "$destination_app" ]]; then
             /bin/kill -TERM "$process_pid" >/dev/null 2>&1 || true
         fi
     done
+fi
+
+# 当前用户无权删除应用本体时（例如 /Applications 只对管理员可写），
+# 交给同一次管理员授权的特权步骤一并删除。
+typeset -a privileged_arguments
+privileged_arguments=()
+if [[ -d "$destination_app" ]] && { [[ ! -w "${destination_app:h}" ]] || [[ ! -w "$destination_app" ]]; }; then
+    privileged_arguments=("$destination_app")
+fi
+
+/usr/bin/osascript "$script_directory/uninstall-privileged.applescript" "${privileged_arguments[@]}"
+
+/bin/launchctl bootout "$user_domain/$launch_agent_label" >/dev/null 2>&1 || true
+/bin/rm -f "$launch_agent_plist"
+/bin/rm -f "$configuration_file"
+/bin/rmdir "$configuration_directory" >/dev/null 2>&1 || true
+
+if [[ -d "$destination_app" ]]; then
     /bin/rm -rf "$destination_app"
 fi
 

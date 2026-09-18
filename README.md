@@ -69,10 +69,12 @@ LidAwake 是一个原生 macOS 菜单栏工具：接通电源时保持 Mac 合�
 ## 安装发布版
 
 1. 解压发布包。
-2. **先**把 `LidAwake.app` 移到 `/Applications` 或 `~/Applications`，再首次打开。
+2. **先**把 `LidAwake.app` 移到 `/Applications`，再首次打开。
 3. 按提示授权安装后台服务。
 
-应用会为当前用户注册登录时启动；root 后台服务安装完成后会在系统启动阶段运行，不需要用户进入桌面。后续若移动应用，请先卸载再从新位置安装，避免登录项仍指向旧路径。
+如果忘了移动就直接打开，应用会提示“请将 LidAwake 移到「应用程序」文件夹”，点“移动并重新打开”即可由它自己完成搬家（`/Applications` 不可写时会请求一次管理员授权），随后从新位置重新启动。
+
+应用会为当前用户注册登录时启动；root 后台服务安装完成后会在系统启动阶段运行，不需要用户进入桌面。登录项和后台服务都按应用所在路径注册，因此发布版只支持 `/Applications/LidAwake.app` 这一个位置；应用在其他位置启动时会拒绝运行，并提供上面的自动移动。
 
 应用内更新由 Sparkle 完成：更新下载安装后会自动重启应用。如果某次发布同时提升了后台服务版本，更新后的第一次启动会再请求一次管理员授权，用于重新安装 `LidAwakeHelper`；之后的启动不再提示。
 
@@ -84,7 +86,7 @@ cd LidAwake
 ./Scripts/install-app.sh
 ```
 
-脚本会构建应用，将其安装到 `~/Applications/LidAwake.app` 并打开。应用通过 macOS `SMAppService` 注册登录时启动；如果用户曾在系统设置中禁止该登录项，菜单中会显示“允许登录时启动…”。首次运行还会请求一次管理员授权，用于把后台服务安装到：
+脚本会构建应用，将其安装到 `/Applications/LidAwake.app` 并打开（`/Applications` 不可写时脚本会直接报错，请换用管理员账户运行一次，而不是用 `sudo` 安装）。应用通过 macOS `SMAppService` 注册登录时启动；如果用户曾在系统设置中禁止该登录项，菜单中会显示“允许登录时启动…”。首次运行还会请求一次管理员授权，用于把后台服务安装到：
 
 - `/Library/PrivilegedHelperTools/com.kafeifei.LidAwake.helper`
 - `/Library/LaunchDaemons/com.kafeifei.LidAwake.helper.plist`
@@ -100,19 +102,23 @@ cat '/Library/Application Support/LidAwake/status.json'
 
 ## 卸载
 
-不要只删除 `.app`，否则系统后台服务仍可能继续运行。请执行：
+不要只删除 `.app`，否则系统后台服务仍可能继续运行。推荐直接用菜单里的最后一项：
+
+- 点击菜单栏图标 → **卸载 LidAwake…** → 确认，全过程不需要终端，只会请求一次管理员授权。
+
+也可以在终端执行源码仓库中的脚本：
 
 ```sh
 ./Scripts/uninstall.sh
 ```
 
-如果只保留了发布版应用，也可以执行应用包中附带的脚本：
+如果只保留了发布版应用，同一个脚本也在应用包里：
 
 ```sh
-"$HOME/Applications/LidAwake.app/Contents/Resources/uninstall.sh"
+"/Applications/LidAwake.app/Contents/Resources/uninstall.sh"
 ```
 
-卸载会先执行 `pmset disablesleep 0`，再移除 LaunchDaemon、系统登录项、旧版 LaunchAgent、配置、状态和应用本体。应用从任意目录运行时，包内卸载脚本都会验证 bundle identifier 后再删除对应的 `LidAwake.app`。
+卸载会先执行 `pmset disablesleep 0`，再移除 LaunchDaemon、系统登录项、旧版 LaunchAgent、配置、状态和应用本体。应用从任意目录运行时，包内卸载脚本都会验证 bundle identifier 后再删除对应的 `LidAwake.app`；当前用户无权删除应用本体时，会在同一次管理员授权里一并删除。
 
 ## 开发与验证
 

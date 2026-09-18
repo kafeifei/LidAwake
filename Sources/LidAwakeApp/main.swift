@@ -155,19 +155,19 @@ private final class HelperInstaller: @unchecked Sendable {
 
         let commands = [
             "set -e",
-            "/bin/mkdir -p " + shellQuote("/Library/PrivilegedHelperTools"),
-            "/bin/mkdir -p " + shellQuote("/Library/Application Support/LidAwake"),
+            "/bin/mkdir -p " + ShellEscaping.shellQuote("/Library/PrivilegedHelperTools"),
+            "/bin/mkdir -p " + ShellEscaping.shellQuote("/Library/Application Support/LidAwake"),
             "/bin/launchctl bootout system/" + AppConstants.helperLabel + " >/dev/null 2>&1 || true",
             "/usr/bin/pmset disablesleep 0 || true",
-            "/usr/bin/install -o root -g wheel -m 0755 " + shellQuote(helperURL.path) + " " + shellQuote(AppConstants.installedHelperPath),
-            "/usr/bin/install -o root -g wheel -m 0644 " + shellQuote(renderedPlistURL.path) + " " + shellQuote(AppConstants.installedPlistPath),
-            "/bin/launchctl bootstrap system " + shellQuote(AppConstants.installedPlistPath),
+            "/usr/bin/install -o root -g wheel -m 0755 " + ShellEscaping.shellQuote(helperURL.path) + " " + ShellEscaping.shellQuote(AppConstants.installedHelperPath),
+            "/usr/bin/install -o root -g wheel -m 0644 " + ShellEscaping.shellQuote(renderedPlistURL.path) + " " + ShellEscaping.shellQuote(AppConstants.installedPlistPath),
+            "/bin/launchctl bootstrap system " + ShellEscaping.shellQuote(AppConstants.installedPlistPath),
             "/bin/launchctl enable system/" + AppConstants.helperLabel,
             "/bin/launchctl kickstart -k system/" + AppConstants.helperLabel,
         ]
 
         let command = commands.joined(separator: "; ")
-        let script = "do shell script \"\(appleScriptEscaped(command))\" with administrator privileges"
+        let script = "do shell script \"\(ShellEscaping.appleScriptEscaped(command))\" with administrator privileges"
         var errorInfo: NSDictionary?
         guard let appleScript = NSAppleScript(source: script) else {
             throw NSError(
@@ -201,15 +201,6 @@ private final class HelperInstaller: @unchecked Sendable {
         return outputURL
     }
 
-    private func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private func appleScriptEscaped(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-    }
 }
 
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -265,6 +256,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // The login item and the system helper are registered against this bundle's path, so a
+        // copy running from anywhere else is moved before anything is registered.
+        guard enforceInstallLocation() else { return }
         configureMenu()
         refreshLoginItemRegistration()
         batterySnapshot = BatteryReader.read()
@@ -292,6 +286,48 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             self?.scheduleLidCloseDisplaySleep()
         }
         clamshellMonitor.start()
+    }
+
+    /// Returns false when this launch must stop: the app is either moving itself to
+    /// `/Applications` and reopening from there, or quitting at the user's request.
+    private func enforceInstallLocation() -> Bool {
+        guard InstallLocation.needsRelocation(bundlePath: Bundle.main.bundlePath) else { return true }
+
+        activateForAlert()
+        let alert = NSAlert()
+        alert.messageText = "请将 LidAwake 移到「应用程序」文件夹"
+        alert.informativeText = """
+            LidAwake 会按自身所在路径注册登录项并安装系统后台服务，因此必须从「应用程序」\
+            （\(InstallLocation.requiredPath)）运行，否则重启后登录项会指向旧位置。\
+            可以现在自动移动并重新打开。
+            """
+        alert.addButton(withTitle: "移动并重新打开")
+        alert.addButton(withTitle: "退出")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            NSApp.terminate(nil)
+            return false
+        }
+
+        do {
+            try InstallLocation.relocate(from: Bundle.main.bundlePath)
+        } catch {
+            let failure = NSAlert()
+            failure.messageText = "无法移到「应用程序」文件夹"
+            failure.informativeText = error.localizedDescription
+            failure.addButton(withTitle: "好")
+            failure.runModal()
+            NSApp.terminate(nil)
+        }
+        return false
+    }
+
+    /// An accessory app has no windows of its own, so it has to come forward for a modal alert.
+    private func activateForAlert() {
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     /// The helper may still be reacting to the lid event, so the decision waits a second and
@@ -394,6 +430,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         )
         batterySettingsItem.target = self
         menu.addItem(batterySettingsItem)
+        menu.addItem(.separator())
+
+        let uninstallItem = NSMenuItem(
+            title: "卸载 LidAwake…",
+            action: #selector(uninstallApp),
+            keyEquivalent: ""
+        )
+        uninstallItem.target = self
+        menu.addItem(uninstallItem)
 
         let quitItem = NSMenuItem(
             title: "退出电池显示",
@@ -737,6 +782,41 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func quitMenuBar() {
         NSApp.terminate(nil)
+    }
+
+    /// Runs the bundled uninstall script and returns. The script quits this app and deletes the
+    /// bundle it lives in, so waiting for it here would deadlock the uninstall.
+    @objc private func uninstallApp() {
+        activateForAlert()
+        let alert = NSAlert()
+        alert.messageText = "卸载 LidAwake？"
+        alert.informativeText = "将恢复正常睡眠，移除后台服务、登录项、配置并删除应用本体；过程中会请求一次管理员授权。"
+        alert.addButton(withTitle: "卸载")
+        alert.addButton(withTitle: "取消")
+        alert.buttons[0].hasDestructiveAction = true
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        guard let scriptURL = Bundle.main.url(forResource: "uninstall", withExtension: "sh") else {
+            presentUninstallFailure("应用包缺少卸载脚本")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [scriptURL.path]
+        do {
+            try process.run()
+        } catch {
+            presentUninstallFailure(error.localizedDescription)
+        }
+    }
+
+    private func presentUninstallFailure(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "无法卸载 LidAwake"
+        alert.informativeText = message
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 
     fileprivate func setPendingUpdateVersion(_ version: String?) {

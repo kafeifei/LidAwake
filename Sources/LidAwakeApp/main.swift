@@ -253,6 +253,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var menuIsOpen = false
     private var latestStatus: HelperStatus?
     private var lidCloseCheckIsScheduled = false
+    /// Lazy so a launch that only relocates the app never opens a MIDI client.
+    private lazy var adi2Controller = ADI2Controller()
+    private let adi2VolumeView = ADI2VolumeView()
+    private let adi2VolumeMenuItem = NSMenuItem()
+    private let adi2VolumeKeysMenuItem = NSMenuItem(title: "用音量键控制 ADI-2 DAC", action: nil, keyEquivalent: "")
+    private let adi2SeparatorItem = NSMenuItem.separator()
+    private let volumeKeyTap = VolumeKeyTap()
+    private let volumeHUD = VolumeHUD()
+    private static let adi2VolumeKeysDefaultsKey = "ADI2VolumeKeysEnabled"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -286,6 +295,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             self?.scheduleLidCloseDisplaySleep()
         }
         clamshellMonitor.start()
+
+        adi2Controller.onChange = { [weak self] in
+            self?.updateADI2MenuItems()
+        }
+        volumeKeyTap.handler = { [weak self] key, isKeyDown, modifiers in
+            self?.handleVolumeKey(key, isKeyDown: isKeyDown, modifiers: modifiers) ?? false
+        }
+        updateVolumeKeyTap()
     }
 
     /// Returns false when this launch must stop: the app is either moving itself to
@@ -414,6 +431,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         loginItemMenuItem.isHidden = true
         menu.addItem(loginItemMenuItem)
         menu.addItem(.separator())
+
+        adi2VolumeMenuItem.view = adi2VolumeView
+        adi2VolumeView.onVolumeChanged = { [weak self] tenths in
+            guard let self, let output = self.adi2Controller.activeOutput else { return }
+            self.adi2Controller.setVolume(tenths, on: output)
+        }
+        menu.addItem(adi2VolumeMenuItem)
+        adi2VolumeKeysMenuItem.target = self
+        adi2VolumeKeysMenuItem.action = #selector(toggleADI2VolumeKeys)
+        menu.addItem(adi2VolumeKeysMenuItem)
+        menu.addItem(adi2SeparatorItem)
+        updateADI2MenuItems()
 
         checkForUpdatesMenuItem.target = updaterController
         menu.addItem(checkForUpdatesMenuItem)
@@ -760,6 +789,83 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func statusTimerFired() {
         refreshStatus()
+        adi2Controller.tick()
+        // Picks the tap up as soon as the Accessibility permission is granted.
+        if !volumeKeyTap.isRunning, UserDefaults.standard.bool(forKey: Self.adi2VolumeKeysDefaultsKey) {
+            updateVolumeKeyTap()
+        }
+    }
+
+    // MARK: ADI-2 DAC volume
+
+    private var adi2VolumeKeysEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.adi2VolumeKeysDefaultsKey)
+    }
+
+    @objc private func toggleADI2VolumeKeys() {
+        let enabled = !adi2VolumeKeysEnabled
+        UserDefaults.standard.set(enabled, forKey: Self.adi2VolumeKeysDefaultsKey)
+        if enabled, !VolumeKeyTap.isTrusted {
+            VolumeKeyTap.requestTrust()
+        }
+        updateVolumeKeyTap()
+    }
+
+    private func updateVolumeKeyTap() {
+        if adi2VolumeKeysEnabled {
+            volumeKeyTap.start()
+        } else {
+            volumeKeyTap.stop()
+        }
+        updateADI2MenuItems()
+    }
+
+    /// The section only appears while an ADI-2 DAC is attached.
+    private func updateADI2MenuItems() {
+        let connected = adi2Controller.isConnected
+        adi2VolumeMenuItem.isHidden = !connected
+        adi2VolumeKeysMenuItem.isHidden = !connected
+        adi2SeparatorItem.isHidden = !connected
+        adi2VolumeView.update(output: adi2Controller.activeOutput, state: adi2Controller.activeState)
+
+        let enabled = adi2VolumeKeysEnabled
+        adi2VolumeKeysMenuItem.state = enabled ? .on : .off
+        if enabled, !volumeKeyTap.isRunning {
+            adi2VolumeKeysMenuItem.title = "用音量键控制 ADI-2 DAC（需要辅助功能权限）"
+            adi2VolumeKeysMenuItem.toolTip = "在系统设置 › 隐私与安全性 › 辅助功能中允许 LidAwake"
+        } else {
+            adi2VolumeKeysMenuItem.title = "用音量键控制 ADI-2 DAC"
+            adi2VolumeKeysMenuItem.toolTip = "ADI-2 DAC 是默认输出时，音量键直接调节 DAC 内部音量；按住 ⌥⇧ 微调 0.5 dB"
+        }
+    }
+
+    /// Returns true when the key belongs to the DAC; false hands it back to macOS unchanged.
+    private func handleVolumeKey(_ key: VolumeKey, isKeyDown: Bool, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard adi2VolumeKeysEnabled,
+              adi2Controller.isConnected,
+              let output = adi2Controller.activeOutput,
+              let state = adi2Controller.activeState,
+              let current = state.volumeTenths,
+              DefaultOutputDevice.isADI2DAC() else {
+            return false
+        }
+        guard isKeyDown else { return true }
+
+        let step = modifiers.contains([.option, .shift]) ? 5 : 10
+        switch key {
+        case .up where !state.locked:
+            adi2Controller.setVolume(ADI2Volume.stepped(current, by: step), on: output)
+        case .down where !state.locked:
+            adi2Controller.setVolume(ADI2Volume.stepped(current, by: -step), on: output)
+        case .mute:
+            adi2Controller.setMuted(!state.muted, on: output)
+        default:
+            break
+        }
+        if let updated = adi2Controller.activeState {
+            volumeHUD.show(output: output, state: updated)
+        }
+        return true
     }
 
     @objc private func retryHelperInstallation() {

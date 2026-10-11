@@ -26,6 +26,8 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreMIDI"),
                 .linkedFramework("IOKit"),
                 .linkedFramework("ServiceManagement"),
             ]

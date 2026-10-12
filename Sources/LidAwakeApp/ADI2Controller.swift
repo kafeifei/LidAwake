@@ -17,12 +17,18 @@ final class ADI2Controller {
     /// The unit reports status about once a second after any valid message; silence longer than
     /// this means it restarted or stopped listening, so the request is sent again.
     private static let silenceBeforeRerequest: TimeInterval = 5
+    /// Reports that arrive this soon after LidAwake set a level are taken as the unit catching up
+    /// with that change, not as the knob being turned.
+    private static let localChangeSettleTime: TimeInterval = 1
 
     private(set) var isConnected = false
     private(set) var activeOutput: ADI2Output?
     private(set) var outputs: [ADI2Output: OutputState] = [:]
     /// Called on the main queue whenever the connection or any tracked value changes.
     var onChange: (() -> Void)?
+    /// Called on the main queue when the unit reports a new level or mute state for the output its
+    /// knob drives, which is what turning or pressing the knob produces.
+    var onKnobChange: ((ADI2Output) -> Void)?
 
     private var client = MIDIClientRef()
     private var inputPort = MIDIPortRef()
@@ -32,6 +38,10 @@ final class ADI2Controller {
     private var assembler = UMPSysEx7.Assembler()
     private var lastMessageAt: Date?
     private var lastRequestAt: Date?
+    private var lastLocalChangeAt: Date?
+    /// Outputs whose mute state the unit has reported at least once; `OutputState.muted` defaults
+    /// to false, which cannot tell a first report from a change.
+    private var reportedMute: Set<ADI2Output> = []
 
     init() {
         let clientStatus = MIDIClientCreateWithBlock("LidAwake" as CFString, &client) { [weak self] notification in
@@ -68,6 +78,7 @@ final class ADI2Controller {
         destination = newDestination ?? 0
         assembler = UMPSysEx7.Assembler()
         outputs = [:]
+        reportedMute = []
         activeOutput = nil
         lastMessageAt = nil
         isConnected = source != 0 && destination != 0
@@ -98,12 +109,14 @@ final class ADI2Controller {
             outputs[output]?.muted = false
         }
         outputs[output, default: OutputState()].volumeTenths = value
+        lastLocalChangeAt = Date()
         send(ADI2Protocol.setPayload(parameters))
         onChange?()
     }
 
     func setMuted(_ muted: Bool, on output: ADI2Output) {
         outputs[output, default: OutputState()].muted = muted
+        lastLocalChangeAt = Date()
         send(ADI2Protocol.setPayload([.mute(muted, on: output)]))
         onChange?()
     }
@@ -115,6 +128,7 @@ final class ADI2Controller {
 
     private func receive(_ words: [UInt32]) {
         var changed = false
+        var knobTurned = false
         for payload in assembler.consume(words) {
             guard let message = ADI2Protocol.parse(payload) else { continue }
             lastMessageAt = Date()
@@ -126,19 +140,29 @@ final class ADI2Controller {
                 }
             case .parameters(let parameters):
                 for parameter in parameters {
-                    changed = apply(parameter) || changed
+                    let change = apply(parameter)
+                    changed = change.any || changed
+                    if change.level, ADI2Output(rawValue: parameter.address) == activeOutput {
+                        knobTurned = true
+                    }
                 }
             }
         }
         if changed {
             onChange?()
         }
+        let settled = lastLocalChangeAt.map { Date().timeIntervalSince($0) > Self.localChangeSettleTime } ?? true
+        if knobTurned, settled, let activeOutput {
+            onKnobChange?(activeOutput)
+        }
     }
 
-    private func apply(_ parameter: ADI2ChannelParameter) -> Bool {
+    /// `level` is true only when an already known volume or mute state changed; the first report
+    /// after connecting fills the values in without counting as a knob turn.
+    private func apply(_ parameter: ADI2ChannelParameter) -> (any: Bool, level: Bool) {
         guard let output = ADI2Output(rawValue: parameter.address),
               let kind = ADI2OutputParameter(rawValue: parameter.index) else {
-            return false
+            return (false, false)
         }
         var state = outputs[output] ?? OutputState()
         switch kind {
@@ -148,9 +172,14 @@ final class ADI2Controller {
         }
         let previous = outputs[output]
         outputs[output] = state
-        return previous?.volumeTenths != state.volumeTenths
-            || previous?.muted != state.muted
-            || previous?.locked != state.locked
+        let volumeChanged = previous?.volumeTenths != state.volumeTenths
+        let muteChanged = previous?.muted != state.muted
+        var level = previous?.volumeTenths != nil && volumeChanged
+        if kind == .mute {
+            level = level || (reportedMute.contains(output) && muteChanged)
+            reportedMute.insert(output)
+        }
+        return (volumeChanged || muteChanged || previous?.locked != state.locked, level)
     }
 
     private func send(_ payload: [UInt8]) {

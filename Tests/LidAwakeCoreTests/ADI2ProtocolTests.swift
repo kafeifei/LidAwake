@@ -66,6 +66,20 @@ final class ADI2ProtocolTests: XCTestCase {
         XCTAssertEqual(ADI2Volume.text(-245), "-24.5 dB")
     }
 
+    func testKeyStepsLandOnTheirGrid() {
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-240, by: 40), -200)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-240, by: -40), -280)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-235, by: 40), -200)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-235, by: -40), -240)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-235, by: 10), -230)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-235, by: -10), -240)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(25, by: 40), 40)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(45, by: 40), ADI2Volume.maximumTenths)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(ADI2Volume.maximumTenths, by: -40), 40)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(-1130, by: -40), ADI2Volume.minimumTenths)
+        XCTAssertEqual(ADI2Volume.steppedOnGrid(ADI2Volume.minimumTenths, by: 40), -1120)
+    }
+
     func testUMPSysExRoundTripsShortAndLongPayloads() {
         for length in [0, 3, 6, 7, 12, 13, 250] {
             let payload = (0..<length).map { UInt8($0 % 128) }

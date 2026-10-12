@@ -835,7 +835,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             adi2VolumeKeysMenuItem.toolTip = "在系统设置 › 隐私与安全性 › 辅助功能中允许 LidAwake"
         } else {
             adi2VolumeKeysMenuItem.title = "用音量键控制 ADI-2 DAC"
-            adi2VolumeKeysMenuItem.toolTip = "ADI-2 DAC 是默认输出时，音量键直接调节 DAC 内部音量；按住 ⌥⇧ 微调 0.5 dB"
+            adi2VolumeKeysMenuItem.toolTip = "ADI-2 DAC 是默认输出时，音量键直接调节 DAC 内部音量；每次 4 dB，按住 ⌥⇧ 微调 1 dB"
         }
     }
 
@@ -851,12 +851,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         guard isKeyDown else { return true }
 
-        let step = modifiers.contains([.option, .shift]) ? 5 : 10
+        let step = modifiers.contains([.option, .shift]) ? ADI2Volume.fineKeyStepTenths : ADI2Volume.keyStepTenths
         switch key {
         case .up where !state.locked:
-            adi2Controller.setVolume(ADI2Volume.stepped(current, by: step), on: output)
+            adi2Controller.setVolume(ADI2Volume.steppedOnGrid(current, by: step), on: output)
         case .down where !state.locked:
-            adi2Controller.setVolume(ADI2Volume.stepped(current, by: -step), on: output)
+            adi2Controller.setVolume(ADI2Volume.steppedOnGrid(current, by: -step), on: output)
         case .mute:
             adi2Controller.setMuted(!state.muted, on: output)
         default:

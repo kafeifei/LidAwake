@@ -3,8 +3,8 @@ import LidAwakeCore
 
 /// Menu row with the ADI-2 DAC's current output, level and a slider that sets it on the unit.
 final class ADI2VolumeView: NSView {
-    /// The slider spans the range people actually listen in; values below it still show as text.
-    private static let sliderMinimumDecibels = -80.0
+    /// The slider spans the unit's whole range, matching the HUD bar.
+    private static let sliderMinimumDecibels = Double(ADI2Volume.minimumTenths) / 10
 
     private let titleLabel = NSTextField(labelWithString: "ADI-2 DAC")
     private let descriptionLabel = NSTextField(labelWithString: "正在读取…")
@@ -82,8 +82,8 @@ final class ADI2VolumeView: NSView {
 final class VolumeHUD {
     private static let displayDuration: TimeInterval = 1.2
     private static let fadeDuration: TimeInterval = 0.25
-    /// The bar spans the range people listen in, so each 1 dB press visibly moves it.
-    private static let lowestShownTenths = -600
+    /// The bar spans the unit's whole range, so it only empties at the unit's own minimum.
+    private static let lowestShownTenths = ADI2Volume.minimumTenths
 
     private let panel: NSPanel
     private let iconView = NSImageView()

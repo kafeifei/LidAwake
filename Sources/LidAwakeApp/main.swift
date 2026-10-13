@@ -299,6 +299,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         adi2Controller.onChange = { [weak self] in
             self?.updateADI2MenuItems()
         }
+        adi2Controller.onKnobChange = { [weak self] output in
+            guard let self, let state = self.adi2Controller.outputs[output] else { return }
+            self.volumeHUD.show(output: output, state: state)
+        }
         volumeKeyTap.handler = { [weak self] key, isKeyDown, modifiers in
             self?.handleVolumeKey(key, isKeyDown: isKeyDown, modifiers: modifiers) ?? false
         }

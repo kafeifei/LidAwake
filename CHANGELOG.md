@@ -2,7 +2,7 @@
 
 All notable changes to LidAwake are documented in this file.
 
-## 0.2.5 - 2026-10-11
+## 0.2.5 - 2026-10-13
 
 - Add hardware volume control for an RME ADI-2 DAC attached over USB. LidAwake talks to the DAC over its USB MIDI port with RME's ADI-2 protocol, the same channel ADI-2 Remote uses, so the level is changed inside the DAC exactly like turning its knob and the audio stream is never touched. The menu gains an ADI-2 DAC row with the active output (line, phones or IEM), its level and a slider; the row only appears while the DAC is connected.
 - Add “用音量键控制 ADI-2 DAC”: while the ADI-2 DAC is the default output, the keyboard volume up/down/mute keys adjust the DAC's active output in 4 dB steps like the built-in volume keys (⌥⇧ for 1 dB, the system's quarter step), landing on the step grid and show a small HUD; with any other output device the keys behave as usual. Swallowing the keys needs the Accessibility permission, which the toggle requests when it is first turned on.

@@ -2,6 +2,12 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## 0.2.6 - 2026-10-16
+
+- The ADI-2 DAC volume keys, slider and volume HUD bar now follow a volume curve instead of fixed 4 dB key steps and a bar that ran linearly in dB. Every key press moves the bar by the same amount, and by default the steps get finer the louder it already is: 25 presses from the unit's minimum up to -25 dB, where the first three skip the inaudible bottom to about -61 dB, then about 3 dB per press around -50 dB, 2 dB around -35 dB and 1 dB or less near the top. ⌥⇧ moves a quarter of a press. Levels still land on the 0.5 dB grid of the unit's knob, which is unchanged.
+- Add “ADI-2 音量曲线…”, a window that draws the curve on a presses-by-dB chart with every press marked. Drag the round handle to reshape the curve, and the square end handle up and down for the maximum volume or left and right for how many presses reach it (16 to 96); hovering shows the level and step of each press, and the DAC's current level is drawn as a line. Changes apply while dragging; “恢复默认” restores the default curve, maximum volume included.
+- The end handle's height in the curve window caps how far the volume keys and the slider raise the DAC, in whole dB from -60 dB to the unit's +6 dB maximum; the default is -25 dB. The bar is full at the cap and the presses spread over the range below it. Turning the unit's own knob is not limited; a level above the cap shows a full bar and the keys only lower it.
+
 ## 0.2.5 - 2026-10-13
 
 - Add hardware volume control for an RME ADI-2 DAC attached over USB. LidAwake talks to the DAC over its USB MIDI port with RME's ADI-2 protocol, the same channel ADI-2 Remote uses, so the level is changed inside the DAC exactly like turning its knob and the audio stream is never touched. The menu gains an ADI-2 DAC row with the active output (line, phones or IEM), its level and a slider; the row only appears while the DAC is connected.

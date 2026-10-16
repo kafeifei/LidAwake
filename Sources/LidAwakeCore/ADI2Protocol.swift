@@ -139,28 +139,8 @@ public enum ADI2Volume {
         min(max(tenths, minimumTenths), maximumTenths)
     }
 
-    /// A volume key press, sized like macOS's own: 16 presses cover the ~64 dB a built-in output
-    /// spans, and ⌥⇧ moves a quarter of that.
-    public static let keyStepTenths = 40
-    public static let fineKeyStepTenths = 10
-
     public static func stepped(_ tenths: Int, by deltaTenths: Int) -> Int {
         clamped(tenths + deltaTenths)
-    }
-
-    /// Moves to the next multiple of the step in the key's direction, the way macOS lands every
-    /// press on its step grid, so a level reached by fine steps or the knob rejoins the grid.
-    public static func steppedOnGrid(_ tenths: Int, by deltaTenths: Int) -> Int {
-        guard deltaTenths != 0 else { return clamped(tenths) }
-        let step = abs(deltaTenths)
-        let floored = Int((Double(tenths) / Double(step)).rounded(.down)) * step
-        let target: Int
-        if deltaTenths > 0 {
-            target = floored + step
-        } else {
-            target = floored == tenths ? tenths - step : floored
-        }
-        return clamped(target)
     }
 
     /// The unit's own knob moves in 0.5 dB steps, so slider input snaps to the same grid.

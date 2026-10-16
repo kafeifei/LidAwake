@@ -258,10 +258,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private let adi2VolumeView = ADI2VolumeView()
     private let adi2VolumeMenuItem = NSMenuItem()
     private let adi2VolumeKeysMenuItem = NSMenuItem(title: "用音量键控制 ADI-2 DAC", action: nil, keyEquivalent: "")
+    private let adi2CurveMenuItem = NSMenuItem(title: "ADI-2 音量曲线…", action: nil, keyEquivalent: "")
+    private lazy var adi2CurveWindow = ADI2CurveWindowController()
     private let adi2SeparatorItem = NSMenuItem.separator()
     private let volumeKeyTap = VolumeKeyTap()
     private let volumeHUD = VolumeHUD()
     private static let adi2VolumeKeysDefaultsKey = "ADI2VolumeKeysEnabled"
+    private static let adi2VolumeLimitDefaultsKey = "ADI2VolumeLimitTenths"
+    private static let adi2CurvePressCountDefaultsKey = "ADI2CurvePressCount"
+    private static let adi2CurveBendXDefaultsKey = "ADI2CurveBendX"
+    private static let adi2CurveBendYDefaultsKey = "ADI2CurveBendY"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -301,7 +307,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         adi2Controller.onKnobChange = { [weak self] output in
             guard let self, let state = self.adi2Controller.outputs[output] else { return }
-            self.volumeHUD.show(output: output, state: state)
+            self.volumeHUD.show(output: output, state: state, curve: self.adi2VolumeCurve)
         }
         volumeKeyTap.handler = { [weak self] key, isKeyDown, modifiers in
             self?.handleVolumeKey(key, isKeyDown: isKeyDown, modifiers: modifiers) ?? false
@@ -445,6 +451,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         adi2VolumeKeysMenuItem.target = self
         adi2VolumeKeysMenuItem.action = #selector(toggleADI2VolumeKeys)
         menu.addItem(adi2VolumeKeysMenuItem)
+        adi2CurveMenuItem.target = self
+        adi2CurveMenuItem.action = #selector(showADI2CurveWindow)
+        menu.addItem(adi2CurveMenuItem)
         menu.addItem(adi2SeparatorItem)
         updateADI2MenuItems()
 
@@ -806,6 +815,35 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         UserDefaults.standard.bool(forKey: Self.adi2VolumeKeysDefaultsKey)
     }
 
+    /// The curve the keys, the slider and the HUD follow; the volume limit is its ceiling.
+    private var adi2VolumeCurve: ADI2VolumeCurve {
+        let defaults = UserDefaults.standard
+        let standard = ADI2VolumeCurve.standard
+        return ADI2VolumeCurve(
+            pressCount: defaults.object(forKey: Self.adi2CurvePressCountDefaultsKey) as? Int ?? standard.pressCount,
+            ceilingTenths: defaults.object(forKey: Self.adi2VolumeLimitDefaultsKey) as? Int ?? standard.ceilingTenths,
+            bendX: defaults.object(forKey: Self.adi2CurveBendXDefaultsKey) as? Double ?? standard.bendX,
+            bendY: defaults.object(forKey: Self.adi2CurveBendYDefaultsKey) as? Double ?? standard.bendY
+        )
+    }
+
+    private func saveADI2VolumeCurve(_ curve: ADI2VolumeCurve) {
+        let defaults = UserDefaults.standard
+        defaults.set(curve.ceilingTenths, forKey: Self.adi2VolumeLimitDefaultsKey)
+        defaults.set(curve.pressCount, forKey: Self.adi2CurvePressCountDefaultsKey)
+        defaults.set(curve.bendX, forKey: Self.adi2CurveBendXDefaultsKey)
+        defaults.set(curve.bendY, forKey: Self.adi2CurveBendYDefaultsKey)
+        updateADI2MenuItems()
+    }
+
+    @objc private func showADI2CurveWindow() {
+        adi2CurveWindow.onChange = { [weak self] curve in
+            self?.saveADI2VolumeCurve(curve)
+        }
+        adi2CurveWindow.update(curve: adi2VolumeCurve, currentTenths: adi2Controller.activeState?.volumeTenths)
+        adi2CurveWindow.present()
+    }
+
     @objc private func toggleADI2VolumeKeys() {
         let enabled = !adi2VolumeKeysEnabled
         UserDefaults.standard.set(enabled, forKey: Self.adi2VolumeKeysDefaultsKey)
@@ -829,7 +867,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         let connected = adi2Controller.isConnected
         adi2VolumeMenuItem.isHidden = !connected
         adi2VolumeKeysMenuItem.isHidden = !connected
+        adi2CurveMenuItem.isHidden = !connected
         adi2SeparatorItem.isHidden = !connected
+        let curve = adi2VolumeCurve
+        adi2VolumeView.curve = curve
+        if adi2CurveWindow.window?.isVisible == true {
+            adi2CurveWindow.update(curve: curve, currentTenths: adi2Controller.activeState?.volumeTenths)
+        }
         adi2VolumeView.update(output: adi2Controller.activeOutput, state: adi2Controller.activeState)
 
         let enabled = adi2VolumeKeysEnabled
@@ -839,7 +883,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
             adi2VolumeKeysMenuItem.toolTip = "在系统设置 › 隐私与安全性 › 辅助功能中允许 LidAwake"
         } else {
             adi2VolumeKeysMenuItem.title = "用音量键控制 ADI-2 DAC"
-            adi2VolumeKeysMenuItem.toolTip = "ADI-2 DAC 是默认输出时，音量键直接调节 DAC 内部音量；每次 4 dB，按住 ⌥⇧ 微调 1 dB"
+            adi2VolumeKeysMenuItem.toolTip = "ADI-2 DAC 是默认输出时，音量键直接调节 DAC 内部音量；按“ADI-2 音量曲线”一格一格调，按住 ⌥⇧ 微调"
         }
     }
 
@@ -855,19 +899,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         guard isKeyDown else { return true }
 
-        let step = modifiers.contains([.option, .shift]) ? ADI2Volume.fineKeyStepTenths : ADI2Volume.keyStepTenths
+        let curve = adi2VolumeCurve
+        let fine = modifiers.contains([.option, .shift])
         switch key {
         case .up where !state.locked:
-            adi2Controller.setVolume(ADI2Volume.steppedOnGrid(current, by: step), on: output)
+            adi2Controller.setVolume(curve.stepped(current, fine: fine, up: true), on: output)
         case .down where !state.locked:
-            adi2Controller.setVolume(ADI2Volume.steppedOnGrid(current, by: -step), on: output)
+            adi2Controller.setVolume(curve.stepped(current, fine: fine, up: false), on: output)
         case .mute:
             adi2Controller.setMuted(!state.muted, on: output)
         default:
             break
         }
         if let updated = adi2Controller.activeState {
-            volumeHUD.show(output: output, state: updated)
+            volumeHUD.show(output: output, state: updated, curve: curve)
         }
         return true
     }

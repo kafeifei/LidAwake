@@ -3,19 +3,19 @@ import LidAwakeCore
 
 /// Menu row with the ADI-2 DAC's current output, level and a slider that sets it on the unit.
 final class ADI2VolumeView: NSView {
-    /// The slider spans the unit's whole range, matching the HUD bar.
-    private static let sliderMinimumDecibels = Double(ADI2Volume.minimumTenths) / 10
-
     private let titleLabel = NSTextField(labelWithString: "ADI-2 DAC")
     private let descriptionLabel = NSTextField(labelWithString: "正在读取…")
+    /// The slider runs over bar positions, matching the HUD bar, across the unit's whole range.
     private let slider = NSSlider(
-        value: -30,
-        minValue: ADI2VolumeView.sliderMinimumDecibels,
-        maxValue: Double(ADI2Volume.maximumTenths) / 10,
+        value: ADI2VolumeCurve.standard.position(-300),
+        minValue: 0,
+        maxValue: 1,
         target: nil,
         action: nil
     )
     var onVolumeChanged: ((Int) -> Void)?
+    /// The user's curve; the slider runs over its positions and ends at its ceiling.
+    var curve = ADI2VolumeCurve.standard
 
     override var isFlipped: Bool { true }
 
@@ -67,13 +67,14 @@ final class ADI2VolumeView: NSView {
         slider.isEnabled = !locked
         // Leave the knob alone mid-drag so device echoes cannot fight the pointer.
         if NSEvent.pressedMouseButtons == 0 {
-            slider.doubleValue = Double(tenths) / 10
+            slider.doubleValue = curve.position(tenths)
         }
         slider.setAccessibilityValue(text)
     }
 
     @objc private func sliderMoved() {
-        onVolumeChanged?(ADI2Volume.snappedToHalfDecibel(slider.doubleValue))
+        let decibels = curve.decibels(atPosition: slider.doubleValue)
+        onVolumeChanged?(min(ADI2Volume.snappedToHalfDecibel(decibels), curve.ceilingTenths))
     }
 }
 
@@ -82,8 +83,6 @@ final class ADI2VolumeView: NSView {
 final class VolumeHUD {
     private static let displayDuration: TimeInterval = 1.2
     private static let fadeDuration: TimeInterval = 0.25
-    /// The bar spans the unit's whole range, so it only empties at the unit's own minimum.
-    private static let lowestShownTenths = ADI2Volume.minimumTenths
 
     private let panel: NSPanel
     private let iconView = NSImageView()
@@ -134,11 +133,11 @@ final class VolumeHUD {
         panel.contentView = background
     }
 
-    func show(output: ADI2Output, state: ADI2Controller.OutputState) {
+    /// The bar uses the user's curve, so it is full at the curve's ceiling.
+    func show(output: ADI2Output, state: ADI2Controller.OutputState, curve: ADI2VolumeCurve) {
         let tenths = state.volumeTenths ?? ADI2Volume.minimumTenths
-        let fraction = Double(tenths - Self.lowestShownTenths)
-            / Double(ADI2Volume.maximumTenths - Self.lowestShownTenths)
-        let level = state.muted ? 0 : min(max(fraction, 0), 1)
+        // The bar uses the same positions as the slider, so it only empties at the unit's minimum.
+        let level = state.muted ? 0 : curve.position(tenths)
 
         let symbol: String
         switch level {

@@ -33,6 +33,18 @@ enum BatteryReader {
         let batteryWatts: Double?
     }
 
+    static var hasInternalBattery: Bool {
+        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef] else {
+            return false
+        }
+        return sources.contains { source in
+            guard let description = IOPSGetPowerSourceDescription(snapshot, source)?
+                .takeUnretainedValue() as? [String: Any] else { return false }
+            return description[kIOPSTypeKey as String] as? String == kIOPSInternalBatteryType as String
+        }
+    }
+
     static func read() -> BatterySnapshot? {
         guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef] else {

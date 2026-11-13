@@ -2,6 +2,12 @@
 
 All notable changes to LidAwake are documented in this file.
 
+## 0.2.7 - 2026-11-12
+
+- Fix a startup crash on Mac Studio and other Macs where PowerUI rejects charge-limit queries. The runtime bridge now treats all three `NSError **` outputs as autoreleasing, preventing an error object from being released twice when the autorelease pool drains.
+- Skip charge-limit initialization entirely when the Mac has no internal battery.
+- Add regression coverage for successful charge-limit reads/writes and all three error paths, including draining the Objective-C autorelease pool before inspecting the error.
+
 ## 0.2.6 - 2026-10-16
 
 - The ADI-2 DAC volume keys, slider and volume HUD bar now follow a volume curve instead of fixed 4 dB key steps and a bar that ran linearly in dB. Every key press moves the bar by the same amount, and by default the steps get finer the louder it already is: 25 presses from the unit's minimum up to -25 dB, where the first three skip the inaudible bottom to about -61 dB, then about 3 dB per press around -50 dB, 2 dB around -35 dB and 1 dB or less near the top. ⌥⇧ moves a quarter of a press. Levels still land on the 0.5 dB grid of the unit's knob, which is unchanged.

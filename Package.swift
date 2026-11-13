@@ -40,6 +40,10 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "LidAwakeAppTests",
+            dependencies: ["LidAwakeApp"]
+        ),
+        .testTarget(
             name: "LidAwakeCoreTests",
             dependencies: ["LidAwakeCore"]
         ),

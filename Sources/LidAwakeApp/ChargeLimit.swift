@@ -30,21 +30,22 @@ final class ChargeLimitController {
         Selector,
         AnyObject
     ) -> Unmanaged<AnyObject>
+    // Objective-C NSError ** parameters are autoreleasing, not pointers to Swift strong storage.
     private typealias UInt8ErrorMethod = @convention(c) (
         AnyObject,
         Selector,
-        UnsafeMutablePointer<AnyObject?>?
+        AutoreleasingUnsafeMutablePointer<NSError?>?
     ) -> UInt8
     private typealias ObjectErrorMethod = @convention(c) (
         AnyObject,
         Selector,
-        UnsafeMutablePointer<AnyObject?>?
+        AutoreleasingUnsafeMutablePointer<NSError?>?
     ) -> Unmanaged<AnyObject>?
     private typealias SetLimitMethod = @convention(c) (
         AnyObject,
         Selector,
         UInt8,
-        UnsafeMutablePointer<AnyObject?>?
+        AutoreleasingUnsafeMutablePointer<NSError?>?
     ) -> Bool
 
     private static let frameworkPath = "/System/Library/PrivateFrameworks/PowerUI.framework/PowerUI"
@@ -57,14 +58,26 @@ final class ChargeLimitController {
     private let clientClass: AnyClass
     private let client: AnyObject
 
-    init?() {
+    convenience init?() {
         #if arch(arm64)
-        guard ProcessInfo.processInfo.isOperatingSystemAtLeast(Self.minimumSystemVersion) else {
+        // Desktop Macs have no charge limit. Do not load PowerUI just to ask an unsupported client.
+        guard BatteryReader.hasInternalBattery,
+              ProcessInfo.processInfo.isOperatingSystemAtLeast(Self.minimumSystemVersion) else {
             return nil
         }
         guard dlopen(Self.frameworkPath, RTLD_LAZY) != nil,
-              let clientClass = NSClassFromString("PowerUISmartChargeClient"),
-              let allocator = class_getClassMethod(clientClass, NSSelectorFromString("alloc")),
+              let clientClass = NSClassFromString("PowerUISmartChargeClient") else {
+            return nil
+        }
+        self.init(clientClass: clientClass)
+        #else
+        return nil
+        #endif
+    }
+
+    // Keep the runtime bridge injectable so its NSError ownership can be tested without PowerUI.
+    init?(clientClass: AnyClass) {
+        guard let allocator = class_getClassMethod(clientClass, NSSelectorFromString("alloc")),
               let initializer = class_getInstanceMethod(
                 clientClass,
                 NSSelectorFromString("initWithClientName:")
@@ -92,9 +105,6 @@ final class ChargeLimitController {
             NSSelectorFromString("initWithClientName:"),
             "com.kafeifei.LidAwake" as NSString
         ).takeRetainedValue()
-        #else
-        return nil
-        #endif
     }
 
     func availableLimits() throws -> [Int] {
@@ -104,7 +114,7 @@ final class ChargeLimitController {
             encoding: "@24@0:8^@16",
             as: ObjectErrorMethod.self
         )
-        var errorObject: AnyObject?
+        var errorObject: NSError?
         let object = implementation(client, selector, &errorObject)?.takeUnretainedValue()
         try throwIfNeeded(errorObject)
         guard let values = object as? [NSNumber], !values.isEmpty else {
@@ -120,7 +130,7 @@ final class ChargeLimitController {
             encoding: "C24@0:8^@16",
             as: UInt8ErrorMethod.self
         )
-        var errorObject: AnyObject?
+        var errorObject: NSError?
         let value = implementation(client, selector, &errorObject)
         try throwIfNeeded(errorObject)
         guard value > 0 else { throw ChargeLimitControllerError.unavailable }
@@ -139,7 +149,7 @@ final class ChargeLimitController {
             encoding: "B28@0:8C16^@20",
             as: SetLimitMethod.self
         )
-        var errorObject: AnyObject?
+        var errorObject: NSError?
         let succeeded = implementation(client, selector, limit, &errorObject)
         try throwIfNeeded(errorObject)
         guard succeeded else { throw ChargeLimitControllerError.rejected(value) }
@@ -161,8 +171,8 @@ final class ChargeLimitController {
         return String(cString: encoding) == expected
     }
 
-    private func throwIfNeeded(_ object: AnyObject?) throws {
-        if let error = object as? NSError {
+    private func throwIfNeeded(_ error: NSError?) throws {
+        if let error {
             throw ChargeLimitControllerError.system(error)
         }
     }
